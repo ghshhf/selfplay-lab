@@ -1,0 +1,681 @@
+{
+  "summary": {
+    "n": 60,
+    "reps": 1,
+    "seed": 801,
+    "levels": {
+      "size": 3,
+      "depth": 3,
+      "hidden": 3,
+      "scaffold": 3,
+      "resource": 3
+    },
+    "A_pass": 58,
+    "A_rate": 0.967,
+    "B_pass": 59,
+    "B_rate": 0.983,
+    "delta_rate": 0.017,
+    "A_ms_avg": 257,
+    "B_ms_avg": 254,
+    "dist_A": {
+      "bisect::wrong_return": 6,
+      "calc::mul_minus_one": 5,
+      "dijkstra::dist_off_by_one": 5,
+      "lru::no_reorder": 4,
+      "topo::no_cycle_check": 3,
+      "quicksort::wrong_bound": 3,
+      "topo::dup_indeg": 3,
+      "calc::add_off_by_one": 3,
+      "stack::no_close_check": 3,
+      "bfs::missing_plus_one": 3,
+      "lru::wrong_capacity": 3,
+      "merge::no_merge": 2,
+      "kadane::init_zero": 2,
+      "stack::wrong_pair": 2,
+      "dedupe::off_by_one": 2,
+      "palindrome::no_lower": 2,
+      "fib::base_wrong": 2,
+      "kadane::no_reset": 2,
+      "fib::off_by_one": 2,
+      "merge::boundary_off": 1,
+      "bisect::off_by_one": 1,
+      "palindrome::keep_symbol": 1
+    },
+    "dist_B": {
+      "dijkstra::dist_off_by_one": 5,
+      "lru::no_reorder": 4,
+      "topo::no_cycle_check": 4,
+      "calc::add_off_by_one": 4,
+      "bisect::off_by_one": 4,
+      "calc::divide_none": 4,
+      "bisect::wrong_return": 3,
+      "quicksort::wrong_bound": 3,
+      "stack::no_close_check": 3,
+      "bfs::missing_plus_one": 3,
+      "lru::wrong_capacity": 3,
+      "merge::boundary_off": 2,
+      "kadane::no_reset": 2,
+      "stack::wrong_pair": 2,
+      "palindrome::keep_symbol": 2,
+      "fib::off_by_one": 2,
+      "topo::dup_indeg": 2,
+      "kadane::init_zero": 2,
+      "fib::base_wrong": 2,
+      "dedupe::unordered": 1,
+      "merge::no_merge": 1,
+      "palindrome::no_lower": 1,
+      "dedupe::off_by_one": 1
+    },
+    "sec": 34.9,
+    "coverage": {
+      "total": 24,
+      "labeled": 22,
+      "missing": [
+        "calc::add_off_by_one",
+        "calc::mul_minus_one"
+      ]
+    }
+  },
+  "rows": [
+    {
+      "seed": 801,
+      "A_task": "lru::no_reorder",
+      "A_pass": true,
+      "A_ms": 282,
+      "B_task": "lru::no_reorder",
+      "B_pass": true,
+      "B_ms": 237,
+      "B_counter": "refactor(0.48)→乱重构会破坏不变量 edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 818,
+      "A_task": "topo::no_cycle_check",
+      "A_pass": true,
+      "A_ms": 227,
+      "B_task": "topo::no_cycle_check",
+      "B_pass": true,
+      "B_ms": 257,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 835,
+      "A_task": "merge::no_merge",
+      "A_pass": false,
+      "A_ms": 174,
+      "B_task": "merge::boundary_off",
+      "B_pass": true,
+      "B_ms": 149,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 852,
+      "A_task": "kadane::init_zero",
+      "A_pass": true,
+      "A_ms": 173,
+      "B_task": "kadane::no_reset",
+      "B_pass": true,
+      "B_ms": 203,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 869,
+      "A_task": "stack::wrong_pair",
+      "A_pass": true,
+      "A_ms": 209,
+      "B_task": "stack::wrong_pair",
+      "B_pass": true,
+      "B_ms": 161,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 886,
+      "A_task": "dedupe::off_by_one",
+      "A_pass": true,
+      "A_ms": 164,
+      "B_task": "dedupe::unordered",
+      "B_pass": true,
+      "B_ms": 229,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 test_cover(0.57)→只有跑测试才知道契约"
+    },
+    {
+      "seed": 903,
+      "A_task": "calc::mul_minus_one",
+      "A_pass": true,
+      "A_ms": 224,
+      "B_task": "calc::add_off_by_one",
+      "B_pass": true,
+      "B_ms": 246,
+      "B_counter": ""
+    },
+    {
+      "seed": 920,
+      "A_task": "merge::boundary_off",
+      "A_pass": true,
+      "A_ms": 276,
+      "B_task": "merge::no_merge",
+      "B_pass": false,
+      "B_ms": 348,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 937,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 343,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 249,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 954,
+      "A_task": "bisect::off_by_one",
+      "A_pass": true,
+      "A_ms": 283,
+      "B_task": "bisect::wrong_return",
+      "B_pass": true,
+      "B_ms": 310,
+      "B_counter": "test_cover(0.57)→只有跑测试才知道契约 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 971,
+      "A_task": "palindrome::no_lower",
+      "A_pass": true,
+      "A_ms": 183,
+      "B_task": "palindrome::no_lower",
+      "B_pass": true,
+      "B_ms": 232,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 test_cover(0.57)→只有跑测试才知道契约"
+    },
+    {
+      "seed": 988,
+      "A_task": "palindrome::no_lower",
+      "A_pass": true,
+      "A_ms": 216,
+      "B_task": "palindrome::keep_symbol",
+      "B_pass": true,
+      "B_ms": 310,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 test_cover(0.57)→只有跑测试才知道契约"
+    },
+    {
+      "seed": 1005,
+      "A_task": "topo::no_cycle_check",
+      "A_pass": true,
+      "A_ms": 299,
+      "B_task": "topo::no_cycle_check",
+      "B_pass": true,
+      "B_ms": 278,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1022,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 310,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 185,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1039,
+      "A_task": "quicksort::wrong_bound",
+      "A_pass": true,
+      "A_ms": 183,
+      "B_task": "quicksort::wrong_bound",
+      "B_pass": true,
+      "B_ms": 194,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1056,
+      "A_task": "lru::no_reorder",
+      "A_pass": true,
+      "A_ms": 285,
+      "B_task": "lru::no_reorder",
+      "B_pass": true,
+      "B_ms": 177,
+      "B_counter": "refactor(0.48)→乱重构会破坏不变量 edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1073,
+      "A_task": "fib::base_wrong",
+      "A_pass": true,
+      "A_ms": 214,
+      "B_task": "fib::off_by_one",
+      "B_pass": true,
+      "B_ms": 197,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1090,
+      "A_task": "topo::dup_indeg",
+      "A_pass": true,
+      "A_ms": 264,
+      "B_task": "topo::dup_indeg",
+      "B_pass": true,
+      "B_ms": 252,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1107,
+      "A_task": "quicksort::wrong_bound",
+      "A_pass": true,
+      "A_ms": 169,
+      "B_task": "quicksort::wrong_bound",
+      "B_pass": true,
+      "B_ms": 234,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1124,
+      "A_task": "calc::add_off_by_one",
+      "A_pass": true,
+      "A_ms": 215,
+      "B_task": "calc::divide_none",
+      "B_pass": true,
+      "B_ms": 215,
+      "B_counter": "test_cover(0.57)→只有跑测试才知道契约 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1141,
+      "A_task": "stack::no_close_check",
+      "A_pass": true,
+      "A_ms": 261,
+      "B_task": "stack::no_close_check",
+      "B_pass": true,
+      "B_ms": 220,
+      "B_counter": "refactor(0.48)→乱重构会破坏不变量 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1158,
+      "A_task": "kadane::no_reset",
+      "A_pass": true,
+      "A_ms": 223,
+      "B_task": "kadane::init_zero",
+      "B_pass": true,
+      "B_ms": 242,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1175,
+      "A_task": "stack::wrong_pair",
+      "A_pass": true,
+      "A_ms": 217,
+      "B_task": "stack::wrong_pair",
+      "B_pass": true,
+      "B_ms": 212,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1192,
+      "A_task": "bfs::missing_plus_one",
+      "A_pass": true,
+      "A_ms": 287,
+      "B_task": "bfs::missing_plus_one",
+      "B_pass": true,
+      "B_ms": 199,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1209,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 195,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 194,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1226,
+      "A_task": "topo::dup_indeg",
+      "A_pass": true,
+      "A_ms": 250,
+      "B_task": "topo::no_cycle_check",
+      "B_pass": true,
+      "B_ms": 248,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1243,
+      "A_task": "bfs::missing_plus_one",
+      "A_pass": true,
+      "A_ms": 298,
+      "B_task": "bfs::missing_plus_one",
+      "B_pass": true,
+      "B_ms": 398,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1260,
+      "A_task": "lru::no_reorder",
+      "A_pass": true,
+      "A_ms": 410,
+      "B_task": "lru::no_reorder",
+      "B_pass": true,
+      "B_ms": 174,
+      "B_counter": "refactor(0.48)→乱重构会破坏不变量 edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1277,
+      "A_task": "dedupe::off_by_one",
+      "A_pass": true,
+      "A_ms": 226,
+      "B_task": "dedupe::off_by_one",
+      "B_pass": true,
+      "B_ms": 333,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1294,
+      "A_task": "fib::base_wrong",
+      "A_pass": true,
+      "A_ms": 284,
+      "B_task": "fib::off_by_one",
+      "B_pass": true,
+      "B_ms": 220,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1311,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 216,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 306,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1328,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 334,
+      "B_task": "bisect::wrong_return",
+      "B_pass": true,
+      "B_ms": 217,
+      "B_counter": "test_cover(0.57)→只有跑测试才知道契约 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1345,
+      "A_task": "lru::wrong_capacity",
+      "A_pass": true,
+      "A_ms": 196,
+      "B_task": "lru::wrong_capacity",
+      "B_pass": true,
+      "B_ms": 205,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1362,
+      "A_task": "calc::mul_minus_one",
+      "A_pass": true,
+      "A_ms": 286,
+      "B_task": "calc::add_off_by_one",
+      "B_pass": true,
+      "B_ms": 185,
+      "B_counter": ""
+    },
+    {
+      "seed": 1379,
+      "A_task": "bfs::missing_plus_one",
+      "A_pass": true,
+      "A_ms": 292,
+      "B_task": "bfs::missing_plus_one",
+      "B_pass": true,
+      "B_ms": 298,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1396,
+      "A_task": "lru::wrong_capacity",
+      "A_pass": true,
+      "A_ms": 260,
+      "B_task": "lru::no_reorder",
+      "B_pass": true,
+      "B_ms": 184,
+      "B_counter": "refactor(0.48)→乱重构会破坏不变量 edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1413,
+      "A_task": "topo::no_cycle_check",
+      "A_pass": true,
+      "A_ms": 283,
+      "B_task": "topo::dup_indeg",
+      "B_pass": true,
+      "B_ms": 269,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1430,
+      "A_task": "palindrome::keep_symbol",
+      "A_pass": true,
+      "A_ms": 193,
+      "B_task": "palindrome::keep_symbol",
+      "B_pass": true,
+      "B_ms": 221,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 test_cover(0.57)→只有跑测试才知道契约"
+    },
+    {
+      "seed": 1447,
+      "A_task": "lru::wrong_capacity",
+      "A_pass": true,
+      "A_ms": 318,
+      "B_task": "lru::wrong_capacity",
+      "B_pass": true,
+      "B_ms": 252,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1464,
+      "A_task": "fib::off_by_one",
+      "A_pass": true,
+      "A_ms": 304,
+      "B_task": "fib::base_wrong",
+      "B_pass": true,
+      "B_ms": 307,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1481,
+      "A_task": "calc::add_off_by_one",
+      "A_pass": true,
+      "A_ms": 352,
+      "B_task": "calc::divide_none",
+      "B_pass": true,
+      "B_ms": 314,
+      "B_counter": "test_cover(0.57)→只有跑测试才知道契约 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1498,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 240,
+      "B_task": "bisect::wrong_return",
+      "B_pass": true,
+      "B_ms": 315,
+      "B_counter": "test_cover(0.57)→只有跑测试才知道契约 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1515,
+      "A_task": "kadane::no_reset",
+      "A_pass": true,
+      "A_ms": 226,
+      "B_task": "kadane::no_reset",
+      "B_pass": true,
+      "B_ms": 333,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1532,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 297,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 266,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1549,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 305,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 270,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1566,
+      "A_task": "lru::no_reorder",
+      "A_pass": true,
+      "A_ms": 215,
+      "B_task": "lru::wrong_capacity",
+      "B_pass": true,
+      "B_ms": 235,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1583,
+      "A_task": "stack::no_close_check",
+      "A_pass": true,
+      "A_ms": 286,
+      "B_task": "stack::no_close_check",
+      "B_pass": true,
+      "B_ms": 317,
+      "B_counter": "refactor(0.48)→乱重构会破坏不变量 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1600,
+      "A_task": "calc::add_off_by_one",
+      "A_pass": true,
+      "A_ms": 396,
+      "B_task": "calc::divide_none",
+      "B_pass": true,
+      "B_ms": 579,
+      "B_counter": "test_cover(0.57)→只有跑测试才知道契约 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1617,
+      "A_task": "topo::dup_indeg",
+      "A_pass": true,
+      "A_ms": 419,
+      "B_task": "topo::no_cycle_check",
+      "B_pass": true,
+      "B_ms": 456,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1634,
+      "A_task": "kadane::init_zero",
+      "A_pass": true,
+      "A_ms": 431,
+      "B_task": "kadane::init_zero",
+      "B_pass": true,
+      "B_ms": 282,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1651,
+      "A_task": "calc::mul_minus_one",
+      "A_pass": true,
+      "A_ms": 396,
+      "B_task": "calc::add_off_by_one",
+      "B_pass": true,
+      "B_ms": 301,
+      "B_counter": ""
+    },
+    {
+      "seed": 1668,
+      "A_task": "merge::no_merge",
+      "A_pass": false,
+      "A_ms": 216,
+      "B_task": "merge::boundary_off",
+      "B_pass": true,
+      "B_ms": 197,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1685,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 185,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 186,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1702,
+      "A_task": "stack::no_close_check",
+      "A_pass": true,
+      "A_ms": 182,
+      "B_task": "stack::no_close_check",
+      "B_pass": true,
+      "B_ms": 217,
+      "B_counter": "refactor(0.48)→乱重构会破坏不变量 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1719,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 233,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 330,
+      "B_counter": "read_first(0.43)→必须通读代码/测试才能定位 retry_cap(0.50)→重试撞不出来，必须一次想对"
+    },
+    {
+      "seed": 1736,
+      "A_task": "calc::mul_minus_one",
+      "A_pass": true,
+      "A_ms": 252,
+      "B_task": "calc::add_off_by_one",
+      "B_pass": true,
+      "B_ms": 198,
+      "B_counter": ""
+    },
+    {
+      "seed": 1753,
+      "A_task": "calc::mul_minus_one",
+      "A_pass": true,
+      "A_ms": 188,
+      "B_task": "calc::divide_none",
+      "B_pass": true,
+      "B_ms": 189,
+      "B_counter": "test_cover(0.57)→只有跑测试才知道契约 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1770,
+      "A_task": "fib::off_by_one",
+      "A_pass": true,
+      "A_ms": 235,
+      "B_task": "fib::base_wrong",
+      "B_pass": true,
+      "B_ms": 218,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    },
+    {
+      "seed": 1787,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 188,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 283,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界"
+    },
+    {
+      "seed": 1804,
+      "A_task": "quicksort::wrong_bound",
+      "A_pass": true,
+      "A_ms": 181,
+      "B_task": "quicksort::wrong_bound",
+      "B_pass": true,
+      "B_ms": 184,
+      "B_counter": "edit_scope(0.54)→大范围改会误伤边界 read_first(0.43)→必须通读代码/测试才能定位"
+    }
+  ]
+}

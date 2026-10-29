@@ -95,15 +95,29 @@ COUNTER_TEXT = {
 }
 
 
+def _split_spec(spec):
+    """把 counters 标注拆成 (direction, strength)。
+
+    两种写法：
+      标量 -0.9 / +0.6  → 符号即方向（负=克制「偏低」，正=克制「偏高」）
+      元组 (direction, strength) → 显式给出
+
+    踩过的坑（务必看）：最初写成
+        direction = -1.0 if strength >= 0 else 1.0
+    这会把**正数判成「克制偏低」**，方向整个反 —— 于是所有反制标签反向生效，
+    对抗出题自然测不出任何效果。正号必须对应 +1。
+    """
+    if isinstance(spec, (tuple, list)):
+        direction, strength = float(spec[0]), float(spec[1])
+    else:
+        direction = float(spec)
+        strength = float(spec)
+    return (1.0 if direction >= 0 else -1.0), abs(strength)
+
+
 def _text_of(gname, spec):
     """把一个 counter 标注翻译成人话。"""
-    if isinstance(spec, (tuple, list)):
-        direction, strength = spec
-    else:
-        strength = float(spec)
-        direction = -1.0 if strength >= 0 else 1.0
-        strength = abs(strength)
-    d = -1 if direction < 0 else 1
+    d, _s = _split_spec(spec)
     return COUNTER_TEXT.get((gname, d), "%s %s" % (gname, "偏低" if d < 0 else "偏高"))
 
 
@@ -151,12 +165,7 @@ def weights_for_family(champ, fam, bounds, alpha=ALPHA):
             for gname, spec in counters.items():
                 if gname not in nz:
                     continue
-                if isinstance(spec, (tuple, list)):
-                    direction, strength = spec
-                else:
-                    strength = float(spec)
-                    direction = -1.0 if strength >= 0 else 1.0
-                    strength = abs(strength)
+                direction, strength = _split_spec(spec)
                 s += strength * deviation(nz[gname], direction)
         ws.append(1.0 + alpha * s)
     return np.asarray(ws, dtype=float)

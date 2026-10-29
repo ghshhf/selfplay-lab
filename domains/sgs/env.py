@@ -245,8 +245,15 @@ class Bot:
         """根据自己身份选攻击目标。"""
         hp = view["hp"]
         if my_id == FAN:
-            # 反贼：优先杀血量最高的（推测是主公，主公血多）
-            return max(candidates, key=lambda q: hp[q])
+            # 反贼的唯一胜利条件 = 主公死亡，所以只要主公活着就锁定座位 0。
+            #
+            # 踩过的坑：原来写的是「杀血量最高的」（想当然以为血最多的就是主公）。
+            # 但主公残血后血量会低于反贼/内奸，max() 就把目标漂到别人身上，
+            # 主公反而缓过来 —— 实测 60 局反贼 0 胜，根因就是这条。
+            # 胜利条件单一的身份，攻击目标不该随血量漂移。
+            if 0 in candidates:
+                return 0
+            return candidates[0]
         if my_id == NEI:
             # 内奸：先杀血量最低的（假装杀非主公），只剩主公时杀主公
             non_zhu = [q for q in candidates if q != 0]
