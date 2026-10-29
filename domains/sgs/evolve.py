@@ -122,25 +122,24 @@ def next_gen(pop, fits, rng, sigma=1.0):
 
 # ---------------------------------------------------------------- 评估
 def evaluate(pop, ec, rng, reps=2):
-    """pop 内 round-robin 互搏，fit = 对全体平均胜率。环境随机，reps 取均值降噪。"""
+    """3 人身份局评估。
+    每局从 pop 随机抽 3 个 bot（可重复），坐 3 个座位，身份由 env 随机分配
+    （座位 0 主公，1/2 随机反贼/内奸）。fit = 该 bot 出场胜率。
+    """
     n = len(pop)
-    score = np.zeros((n, n))
-    for i in range(n):
-        for j in range(i + 1, n):
-            wi = wj = 0
-            for _ in range(reps):
-                env = SgsEnv(seed=int(rng.integers(0, 1 << 30)), **ec)
-                r = env.run(Bot(pop[i]), Bot(pop[j]))
-                if r["winner"] == 0:
-                    wi += 1
-                elif r["winner"] == 1:
-                    wj += 1
-                else:
-                    wi += 0.5
-                    wj += 0.5
-            score[i, j] = wi / reps
-            score[j, i] = wj / reps
-    return score.mean(axis=1)
+    score = np.zeros(n)
+    count = np.zeros(n)
+    for _ in range(reps * n):
+        seats = rng.integers(0, n, size=3)
+        bots = {s: Bot(pop[seats[s]]) for s in range(3)}
+        env = SgsEnv(seed=int(rng.integers(0, 1 << 30)), **ec)
+        r = env.run(bots)
+        w = r["winner"]
+        if w >= 0:
+            score[seats[w]] += 1
+        for s in range(3):
+            count[seats[s]] += 1
+    return np.divide(score, count, out=np.full(n, 0.5), where=count > 0)
 
 
 def try_upgrade(world, hist, gen, rng, log):
@@ -228,7 +227,8 @@ def main():
         if hof:
             for hg in hof[-8:]:
                 env = SgsEnv(seed=int(rng.integers(0, 1 << 30)), **ec)
-                r = env.run(Bot(champ), Bot(hg))
+                bots = {0: Bot(champ), 1: Bot(hg), 2: Bot(hg)}
+                r = env.run(bots)
                 hof_score += 1 if r["winner"] == 0 else (0.5 if r["winner"] == -1 else 0)
             hof_score /= len(hof[-8:])
 
