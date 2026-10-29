@@ -23,13 +23,31 @@ class World:
         return " ".join(parts) if parts else "Lv0"
     def level_no(self):
         return sum(self.levels.values())
-    def try_upgrade(self, hist, gen, rng):
+    def try_upgrade(self, hist, gen, rng, best_hist=None):
         if len(hist) < 10:
             return False
         tail = hist[-10:]
         spread = max(tail) - min(tail)
-        if spread >= 0.01:
+
+        # 平台判据有两条，任一成立就升：
+        #
+        # ① EMA 平稳（原判据）—— 适用于"还在慢慢涨"的域。
+        #
+        # ② 冠军饱和（新增）—— 最近 10 代里 ≥8 代 best_fit 顶到 1.0。
+        #    补这条的原因：只用①会漏判。实测 code 域 best 几乎恒为 1.000，
+        #    但中间偶尔夹一两代掉到 0.9x，EMA 就在 0.95~1.00 之间抖，
+        #    spread 永远 > 0.01，于是 2300 代一次都没升过 —— 不是没平台，
+        #    是判据只盯着"均值稳不稳"，没盯"冠军是不是已经打穿评估器"。
+        #    这也和 RLHF 里的 reward saturation 同形：代理奖励顶到天花板时，
+        #    继续优化只会学到噪声。
+        saturated = False
+        if best_hist and len(best_hist) >= 10:
+            recent = best_hist[-10:]
+            saturated = sum(1 for x in recent if x >= 0.999) >= 8
+
+        if spread >= 0.01 and not saturated:
             return False
+
         # 维度可升到 MAX_LEVEL（让隐藏/体积等维度真正拉开梯度，而非停在 1）
         MAX_LEVEL = 3
         candidates = [k for k in DIMENSIONS if self.levels[k] < MAX_LEVEL]
@@ -120,6 +138,7 @@ def main():
     world = World()
     hof = []
     hist = []
+    best_hist = []   # 每代冠军原始 fit，判「饱和」用（ema 会掩盖它）
     ema = None
     gen = 0
     pop = None
@@ -156,6 +175,7 @@ def main():
         best_fit = float(fits[best_i])
         ema = best_fit if ema is None else 0.85 * ema + 0.15 * best_fit
         hist.append(ema)
+        best_hist.append(best_fit)
         div = diversity(genes)
         champ = pop[best_i]
 
@@ -170,7 +190,7 @@ def main():
                                    ensure_ascii=False) + "\n")
 
         # 自动升级
-        upg = world.try_upgrade(hist, gen, rng)
+        upg = world.try_upgrade(hist, gen, rng, best_hist=best_hist)
         if upg:
             with open(LVL, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"gen": gen, "levels": world.levels,

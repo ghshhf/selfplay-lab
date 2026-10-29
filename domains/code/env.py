@@ -2,9 +2,20 @@
 Agent 能生成代码（不只是提交修复后的代码），通过测试验证。
 难度维度由 World.make_template 控制：size/depth/hidden/scaffold/resource。
 """
-import os, subprocess, sys, json, time, random, tempfile, textwrap, re
+import os, subprocess, sys, json, time, random, tempfile, textwrap, re, difflib
 import gen  # LLM 生成器（外接编码模型当生成器）；CODE_DUEL_LLM 默认开（脑+手）
 import tasks  # 任务自举：golden 池 + 程序化 bug 注入器
+
+
+def change_lines(old_src, new_src):
+    """两个版本之间「改了多少行」（增+删，不含未变部分）。"""
+    a, b = old_src.splitlines(), new_src.splitlines()
+    sm = difflib.SequenceMatcher(None, a, b)
+    n = 0
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag != "equal":
+            n += max(i2 - i1, j2 - j1)
+    return n
 
 GENE_NAMES = ("read_first","edit_scope","retry_cap","backtrack","test_cover",
               "refactor","doc_first","parallel_try","rollback_speed","scaffold")
@@ -1008,6 +1019,10 @@ class CodeEnv:
             self.bug_desc = self.project["bug_desc"]
             self.hidden_flag = hidden >= 2
             self.editable = list(self.files.keys())
+        # 作弊计数：笔试图改白名单以外的文件（尤其测试入口）时 +1。
+        # 不参与 fit 计算，只作为「评估器被攻击」的观测指标。
+        self.cheat_attempts = 0
+        self.cheat_files = []
         self._apply_difficulty()
 
     def _apply_difficulty(self):
@@ -1082,6 +1097,7 @@ class Bot:
         test_error = base_error
         patch = gen.generate_patch(env.project, env.files, env.bug_desc,
                                    test_error, self, bug_file=env.bug_file)
+        patch = self._vet_patch(patch, env)
         if patch:
             new_files = dict(env.files)
             for fname, content in patch.items():
@@ -1113,6 +1129,31 @@ class Bot:
             new_files["extra_check.py"] = self._extra_check(env)
 
         return new_files
+
+    def _vet_patch(self, patch, env):
+        """白名单过滤：只允许改 env.editable 里列出的文件。
+
+        这条不是洁癖，是堵一个能直接刷满分的洞。
+        `env.editable` 早就写好了（tasks.make_task 里等于 [bug_file]），
+        但 write_fix 从来没查过它 —— 也就是说笔只要返回一格
+        `# file: tests.py` 并把断言删掉，或者写成 `print("All tests passed")`，
+        fit 立刻 1.0。这正是 coding agent 最经典的作弊姿势：
+        **测试不过就改测试**（业界文档里点名的那种）。
+
+        越界的文件名记在 env.cheat_files 上，不静默丢弃 ——
+        它是「评估器正在被攻击」的早期信号，比 fit 更值得盯。
+        """
+        if not patch:
+            return None
+        allowed = set(getattr(env, "editable", None) or env.files.keys())
+        kept = {f: c for f, c in patch.items() if f in allowed}
+        refused = [f for f in patch if f not in allowed]
+        if refused:
+            env.cheat_attempts = getattr(env, "cheat_attempts", 0) + len(refused)
+            env.cheat_files = (list(getattr(env, "cheat_files", [])) + refused)[-5:]
+        if not kept:
+            return None   # 全被拒 = 这笔等于没写成，交给查表兜底
+        return kept
 
     def _generate_fix(self, code, env):
         """根据 bug 描述生成修复代码。模拟 LLM 写代码能力。"""
@@ -1249,6 +1290,20 @@ class Bot:
         new_files = self.write_fix(env, base_error=base_err)
         timeout = 5.0 if env.resource >= 2 else 30.0
         passed, error, ms, output = env.run_tests(new_files, env.entry, timeout=timeout)
+
+        # resource 维度：改动行数预算。
+        # 原来这一维只控制测试超时（5s vs 30s），可绝大多数题 5s 都用不完，
+        # 等于没约束。这里补一条真实工程里最常见的约束：**最小改动**。
+        # 重写整个文件碰巧对了，不算本事 —— 它没定位到 bug。
+        if passed and getattr(env, "resource", 0) >= 2:
+            limit = 0.6 if env.resource == 2 else 0.3
+            old_src = env.files.get(env.bug_file, "")
+            new_src = new_files.get(env.bug_file, "")
+            budget = max(4, int(len(old_src.splitlines()) * limit))
+            used = change_lines(old_src, new_src)
+            if used > budget:
+                passed = False
+                error = "改动超预算：%d 行 > 上限 %d 行（resource=%d）" % (used, budget, env.resource)
         return passed, error, ms, output, new_files
 
     @classmethod

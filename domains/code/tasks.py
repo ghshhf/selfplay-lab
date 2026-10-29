@@ -18,6 +18,7 @@ mutate 用确定性字符串替换（与 golden 源码里的确切文本对应�
 """
 
 import random
+import ast
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +487,72 @@ GOLDEN = [
 ]
 
 
+def _deepen(files, bug_file):
+    """depth 维度：把 bug 藏进一条调用链里。
+
+    做法：把 bug 文件里第一个顶层函数改名为 `_impl_<name>`，再生成一个同名
+    转发函数。测试调的还是老名字，**行为完全不变**（wrapper 只转发），
+    但生成器打开文件第一眼看到的是：
+
+        def solve(nums):
+            return _impl_solve(nums)
+
+    bug 在下一层。必须真的往下读，而不是扫一眼就改。
+
+    为什么不改测试契约：测试调的是 `solve`，wrapper 保住了这个名字。
+    为什么不做多层：depth 是 1/2/3，真按层数套会有名字爆炸，两三层对
+    「必须读完才能定位」这个目的已经够了，再深只是增加噪声不增加难度。
+    """
+    if not bug_file or bug_file not in files:
+        return files
+    src = files[bug_file]
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return files
+
+    fn = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_"):
+            fn = node
+            break
+    if fn is None or fn.decorator_list:
+        return files          # 没函数或有装饰器：不冒险，保持原样
+
+    old_name = fn.name
+    new_name = "_impl_" + old_name
+    try:
+        args_src = ast.unparse(fn.args)
+        call_args = ", ".join(a.arg for a in fn.args.posonlyargs + fn.args.args)
+        if fn.args.vararg:
+            call_args += (", " if call_args else "") + "*" + fn.args.vararg.arg
+        if fn.args.kwarg:
+            call_args += (", " if call_args else "") + "**" + fn.args.kwarg.arg
+    except Exception:
+        return files
+
+    # 改定义行：只替换函数名，缩进和其余源码原样保留
+    lines = src.splitlines(keepends=True)
+    patched = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("def " + old_name + "("):
+            lines[i] = line.replace("def " + old_name + "(", "def " + new_name + "(", 1)
+            patched = True
+            break
+    if not patched:
+        return files
+
+    wrapper = (
+        "\n\ndef %s(%s):\n"
+        "    \"\"\"对外接口：转发到实现。\"\"\"\n"
+        "    return %s(%s)\n"
+        % (old_name, args_src, new_name, call_args)
+    )
+    files[bug_file] = "".join(lines) + wrapper
+    return files
+
+
 def make_task(rng, dims):
     """程序化生成一项编程任务。
 
@@ -503,25 +570,36 @@ def make_task(rng, dims):
     size = dims.get("size", 1)
     hidden = dims.get("hidden", 1)
     scaffold = dims.get("scaffold", 1)
+    depth = dims.get("depth", 0)
 
-    # size>=3：加真实（但无关）的干扰函数，逼迫生成器在噪声里定位 bug
-    if size >= 3:
-        noise = (
-            "\n\n"
-            "def _noise_helper(x):\n"
-            "    # 无关辅助函数，纯干扰\n"
-            "    acc = 0\n"
-            "    for i in range(len(x) if isinstance(x, (list, str)) else 0):\n"
-            "        acc += i\n"
-            "    return acc\n"
-            "\n"
-            "def _noise_another(n):\n"
-            "    return [i * 2 for i in range(n)]\n"
-        )
+    # depth>=2：把 bug 藏进一条调用链（行为不变，但必须读下去才找得到）
+    if depth >= 2:
+        files = _deepen(files, bug_file)
+
+    # size>=2：加真实（但无关）的干扰函数，逼迫生成器在噪声里定位 bug。
+    # 原来只在 size>=3 生效，等于 1 和 2 没区别；现在按级别加量。
+    if size >= 2:
+        noise = ""
+        for k in range(size):
+            noise += (
+                "\n\n"
+                "def _noise_helper_%d(x):\n"
+                "    \"\"\"统计辅助（与本题无关）。\"\"\"\n"
+                "    acc = 0\n"
+                "    for i in range(len(x) if isinstance(x, (list, str)) else 0):\n"
+                "        acc += i\n"
+                "    return acc\n"
+                "\n"
+                "def _noise_another_%d(n):\n"
+                "    \"\"\"翻倍表（与本题无关）。\"\"\"\n"
+                "    return [i * 2 for i in range(n)]\n"
+                % (k, k)
+            )
         files[bug_file] = files[bug_file] + noise
 
     # hidden>=2：盲改，不把测试报错喂给生成器；hidden>=3：连 bug 描述都模糊化
     blind = hidden >= 2
+    bug_desc = bp["desc"]
     if hidden >= 3:
         bug_desc = "请根据测试失败信息自行定位并修复该实现中的 bug（不提供具体描述）"
 
@@ -533,7 +611,7 @@ def make_task(rng, dims):
         "files": files,
         "entry": fam["entry"],
         "bug_file": bug_file,
-        "bug_desc": bp["desc"],
+        "bug_desc": bug_desc,
         "hidden": blind,
         "editable": editable,
     }
@@ -621,14 +699,19 @@ def _dij_golden():
             "import heapq\n"
             "\n"
             "def dijkstra(graph, start):\n"
-            "    dist = {n: float('inf') for n in graph}\n"
+            "    # 收集所有节点：graph 的 key 以及作为邻居出现的节点\n"
+            "    nodes = set(graph)\n"
+            "    for u in graph:\n"
+            "        for v, w in graph[u]:\n"
+            "            nodes.add(v)\n"
+            "    dist = {n: float('inf') for n in nodes}\n"
             "    dist[start] = 0\n"
             "    pq = [(0, start)]\n"
             "    while pq:\n"
             "        d, u = heapq.heappop(pq)\n"
             "        if d > dist[u]:\n"
             "            continue\n"
-            "        for v, w in graph[u]:\n"
+            "        for v, w in graph.get(u, []):\n"
             "            if dist[u] + w < dist[v]:\n"
             "                dist[v] = dist[u] + w\n"
             "                heapq.heappush(pq, (dist[v], v))\n"
