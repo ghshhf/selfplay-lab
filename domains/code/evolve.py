@@ -11,16 +11,19 @@ STATE = os.path.join(OUT, "state.json")
 BEST = os.path.join(OUT, "best_now.json")
 
 class World:
-    def __init__(self):
+    def __init__(self, chain_ratio=0.0):
         self.levels = {k: 0 for k in DIMENSIONS}
         self.levels["size"] = 1  # 开局只开函数体积
         # 上一代冠军基因 {基因名: 原始值}；None = 随机出题（对照模式）。
         # 世界据此定向出题：冠军不爱读码，就多出必须通读才改得对的题。
         self.champ = None
+        # 跨层隐含契约题的抽取比例；0 = 纯旧题型（可对照）
+        self.chain_ratio = chain_ratio
     def make_template(self, gen):
         ec = {k: self.levels[k] for k in DIMENSIONS}
         ec["seed"] = gen * 31 + 1
         ec["champ"] = self.champ
+        ec["chain_ratio"] = self.chain_ratio
         return ec
     def describe(self):
         parts = [DIM_LABEL[k] for k in DIMENSIONS if self.levels[k] > 0]
@@ -78,7 +81,8 @@ def evaluate(pop, ec, rng, reps=2):
         bot.rng = random.Random(int(rng.integers(0, 1 << 30)))
         env = CodeEnv(seed=ec["seed"], size=ec["size"], depth=ec["depth"],
                       hidden=ec["hidden"], scaffold=ec["scaffold"],
-                      resource=ec["resource"], champ=ec.get("champ"))
+                      resource=ec["resource"], champ=ec.get("champ"),
+                      chain_ratio=ec.get("chain_ratio", 0.0))
         counter_txt = getattr(env, "counter", "") or ""
         # 多次重试取最好（模拟 agent 多次尝试修复）
         best_passed = False
@@ -134,6 +138,8 @@ def main():
     ap.add_argument("--generations", type=int, default=0, help="0=无限")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--chain-ratio", type=float, default=0.0,
+                    help="跨层隐含契约题（chains.py）的抽取比例，默认 0=纯旧题型")
     args = ap.parse_args()
 
     global OUT, LOG, TSV, CH, LVL, STATE, BEST
@@ -147,7 +153,7 @@ def main():
     BEST = os.path.join(OUT, "best_now.json")
 
     rng = np.random.default_rng(args.seed)
-    world = World()
+    world = World(chain_ratio=args.chain_ratio)
     hof = []
     hist = []
     best_hist = []   # 每代冠军原始 fit，判「饱和」用（ema 会掩盖它）

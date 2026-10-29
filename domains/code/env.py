@@ -990,7 +990,7 @@ if __name__ == "__main__":
 
 class CodeEnv:
     def __init__(self, seed=1, size=1, depth=1, hidden=1, scaffold=1, resource=1,
-                 use_tasks=True, champ=None):
+                 use_tasks=True, champ=None, chain_ratio=0.0):
         self.rng = random.Random(seed)
         self.size = size
         self.depth = depth
@@ -998,12 +998,15 @@ class CodeEnv:
         self.scaffold = scaffold
         self.resource = resource
         self.use_tasks = use_tasks
+        self.chain_ratio = chain_ratio
         if use_tasks:
             # 任务自举：golden 池 + bug 注入器，难度维度在 make_task 里生效。
             # champ 非 None 时世界进入对抗模式，挑克制该冠军的 bug。
+            # chain_ratio > 0 时有这个概率抽到跨层隐含契约题（chains.py）。
             t = tasks.make_task(self.rng, {"size": size, "depth": depth,
                                           "hidden": hidden, "scaffold": scaffold,
-                                          "resource": resource}, champ=champ)
+                                          "resource": resource},
+                                champ=champ, chain_ratio=chain_ratio)
             self.project = {"id": t["id"], "name": t["id"]}
             self.files = t["files"]
             self.entry = t["entry"]

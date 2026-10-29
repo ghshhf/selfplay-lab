@@ -555,10 +555,76 @@ def _deepen(files, bug_file):
     return files
 
 
-def make_task(rng, dims, champ=None):
+def make_noise(size):
+    """返回 size 组（无关但真实）的干扰函数源码，追加到被测文件末尾。
+
+    原先内联在 make_task 里；跨层题型也要用同一份，抽出来共用，
+    免得两边各写一份、日后漂移。
+    """
+    noise = ""
+    for k in range(size):
+        noise += (
+            "\n\n"
+            "def _noise_helper_%d(x):\n"
+            "    \"\"\"统计辅助（与本题无关）。\"\"\"\n"
+            "    acc = 0\n"
+            "    for i in range(len(x) if isinstance(x, (list, str)) else 0):\n"
+            "        acc += i\n"
+            "    return acc\n"
+            "\n"
+            "def _noise_another_%d(n):\n"
+            "    \"\"\"翻倍表（与本题无关）。\"\"\"\n"
+            "    return [i * 2 for i in range(n)]\n"
+            % (k, k)
+        )
+    return noise
+
+
+def _make_chain_task(rng, dims):
+    """抽一道**跨层隐含契约题**（见 chains.py）。
+
+    与 GOLDEN 路径有两个刻意差异：
+
+    - editable 同时开放 core 与 service。笔既可能去修根因，也可能在上层打
+      补丁 —— 这两种行为在单文件结构里被抹平了，在这里第一次能被看见。
+    - 不走 `_deepen`。那个变换会重写 core 的调用结构，可能把跨层 bug 盖掉，
+      届时题就白出了。
+    """
+    import chains
+
+    fam = rng.choice(chains.CHAIN)
+    bp = rng.choice(fam["bug_patterns"])
+    files = bp["mutate"](dict(fam["files"]), rng)
+
+    hidden = dims.get("hidden", 1)
+    size = dims.get("size", 1)
+
+    bug_desc = bp["desc"]
+    if hidden >= 3:
+        bug_desc = "请根据测试失败信息自行定位并修复该实现中的 bug（不提供具体描述）"
+
+    if size >= 2:
+        files[fam["bug_file"]] = files[fam["bug_file"]] + make_noise(size)
+
+    return {
+        "id": "chain::%s::%s" % (fam["id"], bp["name"]),
+        "files": files,
+        "entry": fam["entry"],
+        "bug_file": fam["bug_file"],
+        "bug_desc": bug_desc,
+        "hidden": hidden >= 2,
+        "editable": [fam["bug_file"], fam["service_file"]],
+        "counter": "跨层契约 %s→%s" % (fam["bug_file"], fam["service_file"]),
+    }
+
+
+def make_task(rng, dims, champ=None, chain_ratio=0.0):
     """程序化生成一项编程任务。
 
     dims: dict，含 size/depth/hidden/scaffold/resource（来自 World 难度维度）。
+
+    chain_ratio: float 0~1 —— 抽到**跨层契约题**（chains.py）的概率。
+        默认 0.0，与改造前**完全一致**，可直接做对照实验。
 
     champ: {基因名: 原始值} | None —— 上一代冠军基因。
         传入 → 世界进入**对抗模式**：按 counters 标签加权，优先挑克制该冠军
@@ -570,6 +636,8 @@ def make_task(rng, dims, champ=None):
       - editable: 生成器可修改的文件名列表（scaffold 维度预留）
       - counter: str，对抗模式下记录「这题在克制冠军的什么」，便于事后核账
     """
+    if chain_ratio > 0.0 and getattr(rng, "random", None) and rng.random() < chain_ratio:
+        return _make_chain_task(rng, dims)
     fam = rng.choice(GOLDEN)
     bp = pick_bug_pattern(champ, fam, rng)
     files = dict(fam["files"])
@@ -588,23 +656,7 @@ def make_task(rng, dims, champ=None):
     # size>=2：加真实（但无关）的干扰函数，逼迫生成器在噪声里定位 bug。
     # 原来只在 size>=3 生效，等于 1 和 2 没区别；现在按级别加量。
     if size >= 2:
-        noise = ""
-        for k in range(size):
-            noise += (
-                "\n\n"
-                "def _noise_helper_%d(x):\n"
-                "    \"\"\"统计辅助（与本题无关）。\"\"\"\n"
-                "    acc = 0\n"
-                "    for i in range(len(x) if isinstance(x, (list, str)) else 0):\n"
-                "        acc += i\n"
-                "    return acc\n"
-                "\n"
-                "def _noise_another_%d(n):\n"
-                "    \"\"\"翻倍表（与本题无关）。\"\"\"\n"
-                "    return [i * 2 for i in range(n)]\n"
-                % (k, k)
-            )
-        files[bug_file] = files[bug_file] + noise
+        files[bug_file] = files[bug_file] + make_noise(size)
 
     # hidden>=2：盲改，不把测试报错喂给生成器；hidden>=3：连 bug 描述都模糊化
     blind = hidden >= 2

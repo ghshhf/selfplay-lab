@@ -1,0 +1,435 @@
+{
+  "summary": {
+    "n": 24,
+    "reps": 1,
+    "seed": 1101,
+    "levels": {
+      "size": 3,
+      "depth": 3,
+      "hidden": 3,
+      "scaffold": 3,
+      "resource": 3
+    },
+    "A_pass": 22,
+    "A_rate": 0.917,
+    "B_pass": 24,
+    "B_rate": 1.0,
+    "delta_rate": 0.083,
+    "A_ms_avg": 380,
+    "B_ms_avg": 388,
+    "dist_A": {
+      "dedupe::unordered": 2,
+      "merge::no_merge": 2,
+      "palindrome::keep_symbol": 2,
+      "bisect::wrong_return": 2,
+      "quicksort::wrong_bound": 2,
+      "lru::no_reorder": 2,
+      "fib::off_by_one": 1,
+      "dijkstra::dist_off_by_one": 1,
+      "calc::mul_minus_one": 1,
+      "dedupe::off_by_one": 1,
+      "stack::no_close_check": 1,
+      "fib::base_wrong": 1,
+      "stack::wrong_pair": 1,
+      "calc::divide_none": 1,
+      "lru::wrong_capacity": 1,
+      "calc::add_off_by_one": 1,
+      "kadane::no_reset": 1,
+      "bisect::off_by_one": 1
+    },
+    "dist_B": {
+      "chain::idxsort::tail_unsorted": 8,
+      "chain::groupord::sorted_keys": 6,
+      "chain::snapdiff::shallow_snapshot": 5,
+      "chain::matrow::shared_row": 5
+    },
+    "patch_layer": {
+      "只改 core（根因）": 24
+    },
+    "sec": 89.5
+  },
+  "rows": [
+    {
+      "seed": 1101,
+      "A_task": "fib::off_by_one",
+      "A_pass": true,
+      "A_ms": 566,
+      "A_patched": [
+        "fib.py"
+      ],
+      "B_task": "chain::snapdiff::shallow_snapshot",
+      "B_pass": true,
+      "B_ms": 480,
+      "B_patched": [
+        "history.py"
+      ],
+      "B_counter": "跨层契约 history.py→diffview.py"
+    },
+    {
+      "seed": 1118,
+      "A_task": "dedupe::unordered",
+      "A_pass": true,
+      "A_ms": 334,
+      "A_patched": [
+        "dedupe.py"
+      ],
+      "B_task": "chain::idxsort::tail_unsorted",
+      "B_pass": true,
+      "B_ms": 333,
+      "B_patched": [
+        "store.py"
+      ],
+      "B_counter": "跨层契约 store.py→lookup.py"
+    },
+    {
+      "seed": 1135,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": false,
+      "A_ms": 299,
+      "A_patched": [
+        "dijkstra.py"
+      ],
+      "B_task": "chain::matrow::shared_row",
+      "B_pass": true,
+      "B_ms": 345,
+      "B_patched": [
+        "matrix.py"
+      ],
+      "B_counter": "跨层契约 matrix.py→board.py"
+    },
+    {
+      "seed": 1152,
+      "A_task": "merge::no_merge",
+      "A_pass": true,
+      "A_ms": 269,
+      "A_patched": [
+        "merge.py"
+      ],
+      "B_task": "chain::idxsort::tail_unsorted",
+      "B_pass": true,
+      "B_ms": 276,
+      "B_patched": [
+        "store.py"
+      ],
+      "B_counter": "跨层契约 store.py→lookup.py"
+    },
+    {
+      "seed": 1169,
+      "A_task": "calc::mul_minus_one",
+      "A_pass": true,
+      "A_ms": 262,
+      "A_patched": [
+        "calculator.py"
+      ],
+      "B_task": "chain::idxsort::tail_unsorted",
+      "B_pass": true,
+      "B_ms": 291,
+      "B_patched": [
+        "store.py"
+      ],
+      "B_counter": "跨层契约 store.py→lookup.py"
+    },
+    {
+      "seed": 1186,
+      "A_task": "palindrome::keep_symbol",
+      "A_pass": true,
+      "A_ms": 430,
+      "A_patched": [
+        "palindrome.py"
+      ],
+      "B_task": "chain::idxsort::tail_unsorted",
+      "B_pass": true,
+      "B_ms": 445,
+      "B_patched": [
+        "store.py"
+      ],
+      "B_counter": "跨层契约 store.py→lookup.py"
+    },
+    {
+      "seed": 1203,
+      "A_task": "dedupe::off_by_one",
+      "A_pass": true,
+      "A_ms": 401,
+      "A_patched": [
+        "dedupe.py"
+      ],
+      "B_task": "chain::matrow::shared_row",
+      "B_pass": true,
+      "B_ms": 438,
+      "B_patched": [
+        "matrix.py"
+      ],
+      "B_counter": "跨层契约 matrix.py→board.py"
+    },
+    {
+      "seed": 1220,
+      "A_task": "palindrome::keep_symbol",
+      "A_pass": true,
+      "A_ms": 380,
+      "A_patched": [
+        "palindrome.py"
+      ],
+      "B_task": "chain::groupord::sorted_keys",
+      "B_pass": true,
+      "B_ms": 315,
+      "B_patched": [
+        "collect.py"
+      ],
+      "B_counter": "跨层契约 collect.py→report.py"
+    },
+    {
+      "seed": 1237,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 437,
+      "A_patched": [
+        "binary_search.py"
+      ],
+      "B_task": "chain::snapdiff::shallow_snapshot",
+      "B_pass": true,
+      "B_ms": 379,
+      "B_patched": [
+        "history.py"
+      ],
+      "B_counter": "跨层契约 history.py→diffview.py"
+    },
+    {
+      "seed": 1254,
+      "A_task": "stack::no_close_check",
+      "A_pass": false,
+      "A_ms": 314,
+      "A_patched": [],
+      "B_task": "chain::groupord::sorted_keys",
+      "B_pass": true,
+      "B_ms": 263,
+      "B_patched": [
+        "collect.py"
+      ],
+      "B_counter": "跨层契约 collect.py→report.py"
+    },
+    {
+      "seed": 1271,
+      "A_task": "fib::base_wrong",
+      "A_pass": true,
+      "A_ms": 302,
+      "A_patched": [
+        "fib.py"
+      ],
+      "B_task": "chain::idxsort::tail_unsorted",
+      "B_pass": true,
+      "B_ms": 511,
+      "B_patched": [
+        "store.py"
+      ],
+      "B_counter": "跨层契约 store.py→lookup.py"
+    },
+    {
+      "seed": 1288,
+      "A_task": "quicksort::wrong_bound",
+      "A_pass": true,
+      "A_ms": 382,
+      "A_patched": [
+        "quicksort.py"
+      ],
+      "B_task": "chain::idxsort::tail_unsorted",
+      "B_pass": true,
+      "B_ms": 402,
+      "B_patched": [
+        "store.py"
+      ],
+      "B_counter": "跨层契约 store.py→lookup.py"
+    },
+    {
+      "seed": 1305,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 385,
+      "A_patched": [
+        "binary_search.py"
+      ],
+      "B_task": "chain::snapdiff::shallow_snapshot",
+      "B_pass": true,
+      "B_ms": 335,
+      "B_patched": [
+        "history.py"
+      ],
+      "B_counter": "跨层契约 history.py→diffview.py"
+    },
+    {
+      "seed": 1322,
+      "A_task": "stack::wrong_pair",
+      "A_pass": true,
+      "A_ms": 285,
+      "A_patched": [
+        "stack.py"
+      ],
+      "B_task": "chain::groupord::sorted_keys",
+      "B_pass": true,
+      "B_ms": 308,
+      "B_patched": [
+        "collect.py"
+      ],
+      "B_counter": "跨层契约 collect.py→report.py"
+    },
+    {
+      "seed": 1339,
+      "A_task": "quicksort::wrong_bound",
+      "A_pass": true,
+      "A_ms": 346,
+      "A_patched": [
+        "quicksort.py"
+      ],
+      "B_task": "chain::groupord::sorted_keys",
+      "B_pass": true,
+      "B_ms": 650,
+      "B_patched": [
+        "collect.py"
+      ],
+      "B_counter": "跨层契约 collect.py→report.py"
+    },
+    {
+      "seed": 1356,
+      "A_task": "dedupe::unordered",
+      "A_pass": true,
+      "A_ms": 482,
+      "A_patched": [
+        "dedupe.py"
+      ],
+      "B_task": "chain::idxsort::tail_unsorted",
+      "B_pass": true,
+      "B_ms": 316,
+      "B_patched": [
+        "store.py"
+      ],
+      "B_counter": "跨层契约 store.py→lookup.py"
+    },
+    {
+      "seed": 1373,
+      "A_task": "calc::divide_none",
+      "A_pass": true,
+      "A_ms": 469,
+      "A_patched": [
+        "calculator.py"
+      ],
+      "B_task": "chain::matrow::shared_row",
+      "B_pass": true,
+      "B_ms": 372,
+      "B_patched": [
+        "matrix.py"
+      ],
+      "B_counter": "跨层契约 matrix.py→board.py"
+    },
+    {
+      "seed": 1390,
+      "A_task": "lru::no_reorder",
+      "A_pass": true,
+      "A_ms": 386,
+      "A_patched": [
+        "lru.py"
+      ],
+      "B_task": "chain::idxsort::tail_unsorted",
+      "B_pass": true,
+      "B_ms": 488,
+      "B_patched": [
+        "store.py"
+      ],
+      "B_counter": "跨层契约 store.py→lookup.py"
+    },
+    {
+      "seed": 1407,
+      "A_task": "lru::wrong_capacity",
+      "A_pass": true,
+      "A_ms": 245,
+      "A_patched": [
+        "lru.py"
+      ],
+      "B_task": "chain::snapdiff::shallow_snapshot",
+      "B_pass": true,
+      "B_ms": 421,
+      "B_patched": [
+        "history.py"
+      ],
+      "B_counter": "跨层契约 history.py→diffview.py"
+    },
+    {
+      "seed": 1424,
+      "A_task": "calc::add_off_by_one",
+      "A_pass": true,
+      "A_ms": 349,
+      "A_patched": [
+        "calculator.py"
+      ],
+      "B_task": "chain::groupord::sorted_keys",
+      "B_pass": true,
+      "B_ms": 408,
+      "B_patched": [
+        "collect.py"
+      ],
+      "B_counter": "跨层契约 collect.py→report.py"
+    },
+    {
+      "seed": 1441,
+      "A_task": "kadane::no_reset",
+      "A_pass": true,
+      "A_ms": 446,
+      "A_patched": [
+        "kadane.py"
+      ],
+      "B_task": "chain::groupord::sorted_keys",
+      "B_pass": true,
+      "B_ms": 405,
+      "B_patched": [
+        "collect.py"
+      ],
+      "B_counter": "跨层契约 collect.py→report.py"
+    },
+    {
+      "seed": 1458,
+      "A_task": "bisect::off_by_one",
+      "A_pass": true,
+      "A_ms": 436,
+      "A_patched": [
+        "binary_search.py"
+      ],
+      "B_task": "chain::snapdiff::shallow_snapshot",
+      "B_pass": true,
+      "B_ms": 368,
+      "B_patched": [
+        "history.py"
+      ],
+      "B_counter": "跨层契约 history.py→diffview.py"
+    },
+    {
+      "seed": 1475,
+      "A_task": "lru::no_reorder",
+      "A_pass": true,
+      "A_ms": 391,
+      "A_patched": [
+        "lru.py"
+      ],
+      "B_task": "chain::matrow::shared_row",
+      "B_pass": true,
+      "B_ms": 387,
+      "B_patched": [
+        "matrix.py"
+      ],
+      "B_counter": "跨层契约 matrix.py→board.py"
+    },
+    {
+      "seed": 1492,
+      "A_task": "merge::no_merge",
+      "A_pass": true,
+      "A_ms": 534,
+      "A_patched": [
+        "merge.py"
+      ],
+      "B_task": "chain::matrow::shared_row",
+      "B_pass": true,
+      "B_ms": 370,
+      "B_patched": [
+        "matrix.py"
+      ],
+      "B_counter": "跨层契约 matrix.py→board.py"
+    }
+  ]
+}
