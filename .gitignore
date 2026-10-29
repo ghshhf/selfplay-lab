@@ -15,3 +15,14 @@ domains/duel/shards/
 .vscode/
 .idea/
 .DS_Store
+
+# ---- gomoku 域：不入库的体积大户（均可重新生成，见 domains/gomoku/README.md）----
+# Rapfi 引擎 96M、torch wheel 194M、教材数据 188M+42M+17M
+/rapfi/
+/wheels/
+/results/
+/domains/gomoku/results/*.jsonl
+
+# 但训练日志与 A/B 原始记录是成果，要入库（覆盖上面的 *.log）
+!/domains/gomoku/results/*.log
+!/domains/gomoku/logs/*.txt
