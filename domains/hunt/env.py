@@ -50,13 +50,16 @@ GENE_H = [
     "intercept",     # 去**预测的未来位置**拦截 vs 去当前信念峰值
     "persist",       # 锁定一个候选不动摇的程度
     "obs_trust",     # 多大程度相信线索是逃犯本尊 vs 可能偏到邻居
-    "model_target",  # 对手模型里，多大程度认为逃犯在朝补给点走
+    "model_target",  # 对手模型里，多大程度认为逃犯在朝目标点（机器/门）走
+    "patrol",        # 守机：往「有进度的解码机」靠的权重（vs 纯追信念峰值）
+    "camp",          # 守门：通电后往大门靠的权重
 ]
 
 BOUNDS_H = [
     (0.0, 0.9), (0.02, 1.0), (0.0, 0.30), (1.0, 4.0),
     (0.0, 1.0), (0.0, 1.0), (-1.0, 1.0), (0.0, 0.40),
     (0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0),
+    (0.0, 1.5), (0.0, 1.5),
 ]
 
 # --- 逃犯基因：怎么**让自己难以被推断** ---
@@ -71,12 +74,14 @@ GENE_E = [
     "panic",         # 被刚发现过之后立刻改变行为的强度
     "crowd",         # 偏好度数大的节点（借枢纽混淆视听）
     "edge_run",      # 偏好贴着图的边缘走
+    "greed",         # 贪进度：猎手在附近时还赖在机器上修的胆量（沉没成本）
+    "machine_far",   # 挑机器偏好：远机安全 vs 近机省时
 ]
 
 BOUNDS_E = [
     (0.0, 0.8), (0.0, 1.0), (-1.0, 1.0), (0.0, 0.40),
     (0.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0),
-    (-1.0, 1.0), (0.0, 1.0),
+    (-1.0, 1.0), (0.0, 1.0), (0.0, 1.0), (0.0, 1.0),
 ]
 
 
@@ -168,7 +173,8 @@ class HunterBot:
         (self.stay_assume, self.obs_decay, self.prior_noise,
          self.predict_step, self.chase, self.recency, self.hub,
          self.rand, self.intercept, self.persist,
-         self.obs_trust, self.model_target) = self.gene
+         self.obs_trust, self.model_target,
+         self.patrol, self.camp) = self.gene
         self.belief = None
         self.visit = None
         self.locked = None
@@ -185,13 +191,13 @@ class HunterBot:
             for v in self.belief:
                 self.belief[v] /= tot
 
-    def predict(self, adj, steps=None, supply_map=None):
+    def predict(self, adj, steps=None, objective_map=None):
         """按「对手模型」把信念沿图向前推演若干步。
 
-        supply_map: {node: 到最近补给点的步数}。补给点是公开信息，逃犯的任务
-        就是去踩它们 —— 所以一个**合格**的世界模型必须把这件事算进去。
-        早期版本只有「随机游走」这一个假设，加了补给点之后猎手的对手模型
-        就跟实际差得越来越远，信念质量也就一直不动（实测相关系数 −0.046）。
+        objective_map: {node: 到最近目标点（解码机/大门）的步数}。目标点是
+        公开信息，逃犯的任务就是去那里 —— 所以一个**合格**的世界模型必须
+        把这件事算进去。早期版本只有「随机游走」这一个假设，猎手的对手模型
+        就跟实际差得越来越远，信念质量一直不动（实测相关系数 −0.046）。
         model_target 就是「把对手的目标取向加入先验」的权重，可进化。
         """
         steps = steps if steps is not None else int(round(self.predict_step))
@@ -212,8 +218,8 @@ class HunterBot:
                     nb[v] += share
             belief = nb
             self._renorm(belief)
-        if supply_map and self.model_target > 0:
-            att = {v: 1.0 / (1.0 + supply_map.get(v, 99)) for v in belief}
+        if objective_map and self.model_target > 0:
+            att = {v: 1.0 / (1.0 + objective_map.get(v, 99)) for v in belief}
             self._renorm(att)
             w = min(max(self.model_target, 0.0), 1.0)
             for v in belief:
@@ -262,14 +268,23 @@ class HunterBot:
             d[v] /= tot
 
     # --- 行动 ---
-    def decide(self, adj, me, visible=None, supply_map=None):
-        """返回要去的节点。visible 非 None 时 = 完全信息（对照条件）。"""
+    def decide(self, adj, me, visible=None, objective_map=None,
+               machines=None, powered=False, gates=None):
+        """返回要去的节点。
+
+        visible 非 None 时 = 完全信息（对照条件）。
+
+        machines: [(节点, 进度)] —— 解码机是**公开信息**（第五人格里猎手
+        也能看到哪台在闪），所以守机不需要推断。这让猎手第一次有了
+        两个互相冲突的动作：追信念峰值（可能被遛）vs 守有进度的机器
+        （可能扑空）。patrol/camp 就是这两个倾向的权重，交给进化去调。
+        """
         cand = [me] + list(adj[me])
         if visible is not None:
             # 完全信息对照条件：直接咬住真实位置，绕过整套推断 machinery
             target = visible
         else:
-            fut = self.predict(adj, supply_map=supply_map)
+            fut = self.predict(adj, objective_map=objective_map)
             cur = dict(self.belief)
             mix = {}
             for v in cur:
@@ -288,6 +303,18 @@ class HunterBot:
             dm = bfs_dist(adj, m)
             s = 0.0
             s += self.chase * (1.0 / (1.0 + dm.get(target, 99)))
+            # 守机：往「有进度且没修完」的机器靠。进度越高越值得守 ——
+            # 一台 90% 的机器被砸掉，比一台 10% 的机器疼得多。
+            if self.patrol > 0 and machines:
+                hunt_m = 0.0
+                for mv, prog in machines:
+                    if prog <= 0.0 or prog >= 1.0:
+                        continue
+                    hunt_m = max(hunt_m, prog / (1.0 + dm.get(mv, 99)))
+                s += self.patrol * hunt_m
+            # 守门：通电之后，门才是真正的终局
+            if self.camp > 0 and powered and gates:
+                s += self.camp * max(1.0 / (1.0 + dm.get(g, 99)) for g in gates)
             s -= self.recency * self.visit.get(m, 0) * 0.1
             s += self.hub * len(adj[m]) * 0.05
             s += self.rand * self.rng.random()
@@ -298,29 +325,63 @@ class HunterBot:
 
 
 class EvaderBot:
-    """逃犯：不对称地，它连猎手在哪都不知道（只在极近距离时察觉）。"""
+    """逃犯：不对称地，它连猎手在哪都不知道（只在极近距离时察觉）。
+
+    它的胜利路径和第五人格同构，必须走完三步：
+      1. 站在解码机上**静止**若干回合把进度修满
+      2. 修满 3 台 → 大门通电
+      3. 站到大门上**静止**若干回合开锁
+    关键不是"修机"这个动作，而是**修机必须静止**：它把"移动自由"当筹码押了出去。
+    之前那版逃犯可以一直绕圈，于是猎手永远算不准；现在它必须反复钉在
+    固定点位上，推断才第一次有真东西可抓。
+    """
 
     def __init__(self, gene):
         self.gene = list(gene)
         (self.stay, self.flee, self.hub, self.rand, self.loop_home,
          self.anticipate, self.backtrack, self.panic, self.crowd,
-         self.edge_run) = self.gene
+         self.edge_run, self.greed, self.machine_far) = self.gene
         self.rng = random.Random()
         self.recent = []
 
-    def decide(self, adj, me, home, last_obs=None, hunter_sensed=None,
-               panic=0.0, supplies=None):
-        """supplies: **还没踩到的**补给点列表。逃犯的任务是逐个踩完它们，
-        所以这里给一个固定的趋向项 —— 这是任务定义，不是可进化的偏好。
+    def pick_goal(self, adj, me, machines, gates, powered):
+        """挑这一趟要去哪个目标点。返回 (node, 当前进度) 或 None。
+
+        machine_far 是这一版新加的选择轴：远机更安全（猎手跑过来要时间）
+        但路上风险更大、总耗时更长。0.5 = 完全不在乎距离。
         """
+        if powered:
+            cand = [(g, 1.0) for g in gates]
+        else:
+            cand = [(mv, pr) for mv, pr in machines if pr < 1.0]
+        if not cand:
+            return None
+        d0 = bfs_dist(adj, me)
+        best, best_s = None, None
+        for node, prog in cand:
+            d = d0.get(node, 99)
+            # 进度高的机器有沉没成本，值得回去补
+            s = prog * 1.5
+            # machine_far > 0.5 → 偏好远机；< 0.5 → 偏好近机
+            s += (self.machine_far * 2.0 - 1.0) * d * 0.35
+            if best_s is None or s > best_s:
+                best, best_s = (node, prog), s
+        return best
+
+    def decide(self, adj, me, machines, gates, powered,
+               last_obs=None, hunter_sensed=None, panic=0.0):
+        """返回要去的节点（返回 me 本身就是「留在这里」，也就是在修/在开门）。"""
+        goal = self.pick_goal(adj, me, machines, gates, powered)
+        goal_node, here_prog = (goal if goal else (None, 0.0))
+
         cand = list(adj[me]) + [me]
         best, best_s = me, None
         for m in cand:
             dm = bfs_dist(adj, m)
             s = 0.0
-            if supplies:
-                nearest = min(dm.get(x, 99) for x in supplies)
-                s += 0.6 / (1.0 + nearest)
+            # 趋向目标 —— 这是任务定义，不是可进化的偏好
+            if goal_node is not None:
+                s += 0.6 / (1.0 + dm.get(goal_node, 99))
             if m == me:
                 s += self.stay * 2.0
             if last_obs is not None:
@@ -328,12 +389,15 @@ class EvaderBot:
                 # 预判：猎手大概率朝旧脚印来，那就反向走
                 s += self.anticipate * min(dm.get(last_obs, 0), 6) * 0.20
             if hunter_sensed is not None:
-                # 离察觉到的猎手越近，扣分越多 —— 往远处闪
-                s -= max(0.0, 6 - dm.get(hunter_sensed, 99)) * 0.35
+                dh = dm.get(hunter_sensed, 99)
+                danger = max(0.0, 1.0 - dh / 4.0)     # 越近越危险
+                s -= danger * 2.5
+                # 贪：进度越高越舍不得走，greed 就是「愿意拿命换进度」的那部分。
+                # 这一项和上面的惩罚方向相反，所以 greed 高的个体真的会赌。
+                if m == me and here_prog > 0.0:
+                    s += self.greed * here_prog * danger * 2.0
             s += self.hub * len(adj[m]) * 0.06
             s += self.crowd * len(adj[m]) * 0.06
-            if home is not None:
-                s -= self.loop_home * (1.0 - 1.0 / (1.0 + dm.get(home, 99))) * 0.8
             if self.recent and self.backtrack > 0:
                 hit = sum(1 for x in self.recent[-3:] if x == m)
                 s -= self.backtrack * hit * 0.3
@@ -352,23 +416,38 @@ class EvaderBot:
 # 环境
 # ---------------------------------------------------------------------------
 class HuntEnv:
-    # 远距离 Byela - 补给点：逃犯必须逐个访问，**集齐才算逃脱**。
-    # 这一维是被逼出来的：没有它，双方同速 + 逃犯有「距离<=1 就察觉」的近距
-    # 感知 + 环形图没有死胡同，于是逃犯贴着跑就永远追不上 —— 实测到后期连
-    # **完全信息**（看得到）的猎手抓捕率都掉到 0.092。那时候瓶颈已经完全不在
-    # 推断，这个域也就失去了意义。
-    # 给了补给点，逃犯必须冒险走固定点位，猎手可以预测并拦截 ——
-    # 「推断」这才重新变成胜负手。
+    # 第五人格式的不对称对抗：逃脱者必须**静止**才能推进度。
+    #
+    # 三轮迭代的教训在这里各留一条：
+    # 1. 逃犯能一直绕圈时（双方同速 + 近距感知 + 环形图没死胡同），连
+    #    **完全信息**的猎手抓捕率都掉到 0.092 —— 瓶颈彻底不在推断。
+    # 2. 只加「踩点位」不够：逃犯踩完就走，位置照样飘，推断的代价只有 +0.065。
+    # 3. 真正的解法是让**静止成为进度的唯一来源**（修机/开门）。静止 = 位置被钉死，
+    #    猎手第一次有稳定的东西可以推断；而逃犯要在「贪进度（暴露）」和
+    #    「保命（没进度）」之间反复取舍 —— 这个取舍才是这个域的核心张力。
     def __init__(self, seed=0, nodes=16, extra=6, obs_every=4,
-                 max_turns=24, obs_noise=0.5, visible=None, n_supplies=3):
+                 max_turns=40, obs_noise=0.5, visible=None,
+                 n_machines=5, need=3, machine_ticks=4, gate_ticks=3,
+                 sabotage=0.34, hunter_slow=2):
         self.seed = int(seed)
         self.nodes = int(nodes)
         self.extra = int(extra)
         self.obs_every = int(obs_every)
         self.max_turns = int(max_turns)
-        self.n_supplies = int(n_supplies)
-        # 线索噪声：obx_noise 的概率里，线索落在逃犯的**某个邻居**而不是它本人。
-        # 没有这一维，hunter 等价于每 k 回合拿到一次精确坐标，直接走过去几乎必撞，
+        self.n_machines = int(n_machines)
+        self.need = int(need)
+        self.tick = 1.0 / max(1, int(machine_ticks))
+        self.gate_tick = 1.0 / max(1, int(gate_ticks))
+        # 猎手路过未修完的机器时，砸掉的进度比例。这一条是「巡逻」存在的理由：
+        # 没有它，猎手只有「追」一个动作，守机就永远是次优解。
+        self.sabotage = float(sabotage)
+        # 猎手每 hunter_slow 回合才走一步。这是非对称对抗的标准补偿：
+        # 猎手更强但更慢，逃犯靠机动拉开距离 —— 于是「停下修机」才真正有代价，
+        # 因为它把唯一的速度优势也押了出去。没有这一条，20 节点图上猎手
+        # 几乎是必撞（实测随机种群 0.86~0.95 胜率），域就退化成"谁先看见谁赢"。
+        self.hunter_slow = max(1, int(hunter_slow))
+        # 线索噪声：obs_noise 的概率里，线索落在逃犯的**某个邻居**而不是它本人。
+        # 没有这一维，猎手等价于每 k 回合拿到一次精确坐标，直接走过去几乎必撞，
         # 信念退化成点估计，「推断」也就无从谈起了。
         self.obs_noise = float(obs_noise)
         # visible 不是 None → 完全信息对照条件（把 belief 换成真值）
@@ -383,13 +462,42 @@ class HuntEnv:
                 if bfs_dist(self.adj, self.start_h).get(v, 99) >= 3]
         self.start_e = rng.choice(pool) if pool else rng.randrange(self.nodes)
         self.home = self.start_e
-        # 补给点：公开信息，双方都知道。逃犯要逐个踩完才算逃脱，
-        # 所以它没法只靠兜圈子活下来 —— 这也是这个域里「推断」重新变得值钱的原因。
+
+        # 解码机：尽量铺开。挤在一团的话逃犯修一台走两步就到下一台，
+        # 「带路的时间 vs 静止的风险」这个取舍就消失了。
         cands = [v for v in all_nodes if v != self.start_e]
         rng.shuffle(cands)
-        self.supplies = cands[:self.n_supplies]
-        # 猎手侧的对手模型要用：补给点是公开的，这里预先算好各点到最近补给的步数
-        self.supply_map = supply_dist(self.adj, self.supplies)
+        self.machines = []
+        for v in cands:
+            if len(self.machines) >= self.n_machines:
+                break
+            if not self.machines:
+                self.machines.append(v)
+                continue
+            if min(bfs_dist(self.adj, v).get(u, 99) for u in self.machines) >= 2:
+                self.machines.append(v)
+        for v in cands:                      # 铺不开就凑满
+            if len(self.machines) >= self.n_machines:
+                break
+            if v not in self.machines:
+                self.machines.append(v)
+        self.machine_prog = {v: 0.0 for v in self.machines}
+
+        # 大门：取离所有机器总和最远的两个点。通电之后逃犯还得再跑一段，
+        # 于是开门成了第二个"必须静止"的暴露窗口。
+        dsum = {}
+        for v in all_nodes:
+            dv = bfs_dist(self.adj, v)
+            dsum[v] = sum(dv.get(mv, 99) for mv in self.machines)
+        gpool = [v for v in all_nodes if v not in self.machines] or all_nodes
+        gpool.sort(key=lambda v: -dsum.get(v, 0))
+        self.gates = gpool[:2]
+
+    def _objective_map(self, powered):
+        """到最近「该去的地方」的步数，给猎手的对手模型用。"""
+        src = self.gates if powered else \
+            [v for v, pr in self.machine_prog.items() if pr < 1.0]
+        return supply_dist(self.adj, src) if src else {}
 
     def run(self, hunter, evader):
         """跑一局，返回 dict。零随机：给定输入，结果确定。"""
@@ -405,9 +513,9 @@ class HuntEnv:
         turns = 0
         caught = False
         escaped = False
-        # 还没踩到的补给点。它在循环外初始化，逐回合减少 ——
-        # 逃犯的目标就是把它们跑完。
-        todo = list(self.supplies)
+        powered = False
+        gate_prog = 0.0
+        still_turns = 0        # 花了多少回合静止在机器/门上（暴露时长）
 
         ent_sum = 0.0
         kl_sum = 0.0
@@ -435,40 +543,73 @@ class HuntEnv:
                 hunter.belief = {v: 0.0 for v in range(n)}
                 hunter.belief[epos] = 1.0
 
-            # --- 逃犯先动 ---
-            new_epos = evader.decide(self.adj, epos, self.home,
+            # --- 逃犯先动（返回原格 = 留在这里，也就是在修机/开门） ---
+            mlist = list(self.machine_prog.items())
+            new_epos = evader.decide(self.adj, epos, mlist, self.gates, powered,
                                      last_obs=last_obs,
                                      hunter_sensed=sensed,
-                                     panic=1.0 if leak else 0.0,
-                                     supplies=todo)
+                                     panic=1.0 if leak else 0.0)
             if new_epos in ([epos] + list(self.adj[epos])):
                 epos = new_epos
-            if epos in todo:
-                todo.remove(epos)
             if epos == hpos:
                 caught = True
                 break
-            if not todo:
-                # 补给全部集齐 —— 逃脱成功
-                escaped = True
-                break
 
-            # --- 猎手后动 ---
-            aim = epos if self.visible is not None else None
-            new_hpos = hunter.decide(self.adj, hpos, visible=aim,
-                                     supply_map=self.supply_map)
-            if new_hpos in ([hpos] + list(self.adj[hpos])):
-                hpos = new_hpos
-            if hpos == epos:
-                caught = True
-                break
+            # --- 静止即工作 ---
+            repair_tip = None
+            if not powered:
+                pr = self.machine_prog.get(epos, 0.0)
+                if pr < 1.0:
+                    self.machine_prog[epos] = min(1.0, pr + self.tick)
+                    still_turns += 1
+                    # 修机有动静：密码机在闪，猎手看得见哪台被修。
+                    # 这是「静止」的真正代价 —— 暴露频率从「每 obs_every 回合
+                    # 一次」变成「每回合一次」，代价高了一个量级。
+                    # 没有这一条，逃犯可以无风险地修机，整个域就没有张力：
+                    # 实测信念熵 2.94 ≈ 均匀 ln(20)=2.996，等于什么也没推断出来。
+                    repair_tip = epos
+                    if sum(1 for x in self.machine_prog.values() if x >= 1.0) >= self.need:
+                        powered = True
+            else:
+                if epos in self.gates:
+                    gate_prog = min(1.0, gate_prog + self.gate_tick)
+                    still_turns += 1
+                    repair_tip = epos          # 开门同样有动静
+                    if gate_prog >= 1.0:
+                        escaped = True
+                        break
+            if repair_tip is not None and self.visible is None:
+                tip = repair_tip
+                if self.obs_noise > 0 and \
+                        random.Random(self.seed * 6151 + turn).random() < self.obs_noise * 0.6:
+                    nb = list(self.adj[repair_tip])
+                    if nb:
+                        tip = nb[random.Random(self.seed * 8317 + turn).randrange(len(nb))]
+                hunter.observe(tip, self.adj)
+
+            # --- 猎手后动（每 hunter_slow 回合才走一步：更快会变成"看见就赢"） ---
+            if turn % self.hunter_slow == 0:
+                aim = epos if self.visible is not None else None
+                new_hpos = hunter.decide(self.adj, hpos, visible=aim,
+                                         objective_map=self._objective_map(powered),
+                                         machines=list(self.machine_prog.items()),
+                                         powered=powered, gates=self.gates)
+                if new_hpos in ([hpos] + list(self.adj[hpos])):
+                    hpos = new_hpos
+                if hpos == epos:
+                    caught = True
+                    break
+                # --- 砸机：猎手路过有进度的机器就砸掉一截 ---
+                hp_ = self.machine_prog.get(hpos, 0.0)
+                if 0.0 < hp_ < 1.0:
+                    self.machine_prog[hpos] = max(0.0, hp_ - self.sabotage)
 
             # --- 信念推演一步（世界模型在跑） ---
             if self.visible is None:
                 # 没有新线索时也照样推演一步 —— 预测会让信念自然扩散，
                 # 这正是「不知道的时间越久越不确定」应有的表现。
                 hunter.belief = hunter.predict(self.adj, steps=1,
-                                               supply_map=self.supply_map)
+                                               objective_map=self._objective_map(powered))
 
             # --- 记录信念质量 ---
             if self.visible is None:
@@ -479,13 +620,17 @@ class HuntEnv:
                 top1_sum += 1.0 if peak == epos else 0.0
                 samples += 1
 
+        machines_done = sum(1 for x in self.machine_prog.values() if x >= 1.0)
         return {
             "caught": caught,
             "escaped": escaped,
-            # 集齐补给算逃犯赢；超时没集齐，即使没被抓到也算猎手赢
+            # 门开满才算逃出去；超时没出去，即使没被抓到也算猎手赢
             "winner": "hunter" if caught else ("evader" if escaped else "hunter"),
             "turns": turns,
-            "supplies_left": len(todo),
+            "machines_done": machines_done,
+            "powered": powered,
+            "gate_prog": round(gate_prog, 3),
+            "still_turns": still_turns,
             "belief_entropy": round(ent_sum / max(1, samples), 4),
             "belief_nll": round(kl_sum / max(1, samples), 4),
             "belief_top1": round(top1_sum / max(1, samples), 4),

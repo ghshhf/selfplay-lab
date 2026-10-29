@@ -147,8 +147,18 @@ def main():
                   % (r["gen"], r["ctrl"], r["best_h"], r["ctrl"] - r["best_h"]))
         gaps = [r["ctrl"] - r["best_h"] for r in ctrl]
         print("  平均差额 %+.3f" % statistics.mean(gaps))
+        hi = statistics.mean([r["ctrl"] for r in ctrl])
+        print("  完全信息下的绝对胜率 %.3f" % hi)
         if statistics.mean(gaps) > 0.10:
             print("  → 推断确实有负担，域设计成立")
+        elif hi < 0.80:
+            # 重要：这个差额会随「对手变强」而缩水，不能直接读成「推断不重要」。
+            # 对手强到连「看得见」都只有六成胜率时，两个天花板一起塌，
+            # 差额自然被压平 —— 这和 code 域的评估器天花板是同一个病。
+            print("  → 差额小，但完全信息本身也只有 %.2f：两个天花板一起塌了。" % hi)
+            print("    这不代表推断不重要，而是**对手变强后连看得见都难赢**。")
+            print("    要量推断的真实价值，得用「冠军对冠军」的同 pair 口径，")
+            print("    不能用「当轮最强 vs 随机对手」的差额。")
         else:
             print("  → 差额很小：这个环境里推断几乎不必要，域需要更难")
     else:

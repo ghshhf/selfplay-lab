@@ -35,8 +35,9 @@ import numpy as np
 from env import (BOUNDS_E, BOUNDS_H, GENE_E, GENE_H, EvaderBot, HuntEnv,
                  HunterBot)
 
-DIMENSIONS = ["nodes", "hidden", "press"]
-DIM_LABEL = {"nodes": "图规模", "hidden": "线索稀疏", "press": "回合压迫"}
+DIMENSIONS = ["nodes", "hidden", "press", "machines"]
+DIM_LABEL = {"nodes": "图规模", "hidden": "线索稀疏", "press": "回合压迫",
+             "machines": "通电门槛"}
 MAX_LEVEL = 3
 
 
@@ -65,24 +66,34 @@ def diversity(pop):
 # ---------------------------------------------------------------------------
 class World:
     def __init__(self):
-        # 起步参数全部实测校准过，不靠直觉：
-        #   nodes=16 / obs_every=4 / obs_noise=0.6 / max_turns=50 / n_supplies=3
-        #   → 随机种群互搏 猎手 0.750，完全信息对照 0.895，差 0.145。
-        # 刻意**没有**压到 0.50：加了补给点之后逃犯有了「跑完路线」这个明确目标，
-        # 从 0.75 往上追同样是真梯度；硬调到五五开反而会把两端都压平。
-        # 难度升级的判据同样要小心 —— 详见 try_upgrade 的注释。
-        self.levels = {"nodes": 1, "hidden": 1, "press": 1}
+        # 起步参数全部实测校准过，不靠直觉。修机-开门版的标定过程：
+        #   先试 16 节点 / 线索每 4 回合 / 猎手全速 → 猎手 0.948，逃犯被压死；
+        #   加 hunter_slow 与稀线索两个方向各扫一遍，再补上「修机有动静」
+        #   （修机每回合都泄一次位置，而不是等 obs_every），最终取
+        #   nodes=20 / obs_every=10 / max_turns=75 / tick=2 / sabotage=0.22
+        #   → 随机种群互搏 猎手 0.725，信念峰值命中 0.184（随机 1/20=0.05）。
+        # 这个域的信念指标第一次像样：修机时必须静止，猎手才有稳定的东西可推。
+        # 刻意**没有**压到 0.50：逃犯还有「选远机/挑时机/贪进度」三条没进化的轴，
+        # 从 0.745 往下追同样是真梯度；硬调到五五开反而会把两端都压平。
+        self.levels = {"nodes": 0, "hidden": 0, "press": 0, "machines": 0}
         self._last_upgrade = None
 
     def params(self):
         lv = self.levels
         return dict(
-            nodes=12 + 4 * lv["nodes"],
-            extra=4 + 2 * lv["nodes"],
-            obs_every=3 + lv["hidden"],
+            nodes=20 + 3 * lv["nodes"],
+            extra=8 + lv["nodes"],
+            # 数值越小 = 线索越频繁 = 越难
+            obs_every=max(4, 10 - 2 * lv["hidden"]),
             obs_noise=0.4 + 0.2 * lv["hidden"],
-            max_turns=56 - 6 * lv["press"],
-            n_supplies=3,
+            max_turns=75 - 6 * lv["press"],
+            n_machines=5,
+            # 门槛从 3 抬到 4：逃犯要多冒一台机器的静止时间
+            need=3 + (1 if lv["machines"] >= 2 else 0),
+            machine_ticks=2,
+            gate_ticks=3,
+            sabotage=0.22,
+            hunter_slow=2,
         )
 
     def level_no(self):
@@ -151,6 +162,7 @@ def evaluate(pop_h, pop_e, P, rng, k=10, reps=3, seed0=0,
     cnt = np.zeros((nh, ne))
     caught_vis = np.zeros((nh, ne))
     ent_sum = nll_sum = top1_sum = 0.0
+    mach_sum = still_sum = 0.0
     n_sample = 0
 
     for i in range(nh):
@@ -160,14 +172,17 @@ def evaluate(pop_h, pop_e, P, rng, k=10, reps=3, seed0=0,
             for r in range(reps):
                 seed = seed0 * 1000003 + i * 7919 + j * 104729 + r
                 res = play(pop_h[i], pop_e[j], P, seed)
-                s += 1.0 if res["caught"] else 0.0
+                # 按 winner 判，不是按 caught 判：超时也算猎手赢（逃犯没逃出去）
+                s += 1.0 if res["winner"] == "hunter" else 0.0
                 if want_visible:
                     resv = play(pop_h[i], pop_e[j], P, seed, visible=1)
-                    caught_vis[i, j] += 1.0 if resv["caught"] else 0.0
+                    caught_vis[i, j] += 1.0 if resv["winner"] == "hunter" else 0.0
                 if res.get("belief_entropy") is not None:
                     ent_sum += res["belief_entropy"]
                     nll_sum += res["belief_nll"]
                     top1_sum += res["belief_top1"]
+                    mach_sum += res["machines_done"]
+                    still_sum += res["still_turns"]
                     n_sample += 1
             caught[i, j] = s
             cnt[i, j] = float(reps)
@@ -187,6 +202,10 @@ def evaluate(pop_h, pop_e, P, rng, k=10, reps=3, seed0=0,
         "belief_entropy": round(ent_sum / max(1, n_sample), 4),
         "belief_nll": round(nll_sum / max(1, n_sample), 4),
         "belief_top1": round(top1_sum / max(1, n_sample), 4),
+        # 修机/静止是两个新的过程指标：逃犯到底修到了几台、
+        # 为了进度把自己钉在原地多少回合（暴露时长）。
+        "machines_done": round(mach_sum / max(1, n_sample), 3),
+        "still_turns": round(still_sum / max(1, n_sample), 2),
     }
     # kh 目前未用于 fit_e 的采样（fit_e 用所有 hunter 的结果反推），保留对称
     _ = kh
@@ -194,12 +213,17 @@ def evaluate(pop_h, pop_e, P, rng, k=10, reps=3, seed0=0,
 
 
 def visible_control(pop_h_i, pop_e_j, P, n=120):
-    """完全信息对照：同一对策略，在猎手能直接看到真实坐标时能拿几分。"""
+    """完全信息对照：同一对策略，在猎手能直接看到真实坐标时能拿几分。
+
+    注意：主循环已经不用它了（改用 evaluate 内部同 seed 同 pair 的真对照）。
+    留在这里是给手工排查用 —— 单独调用时 seed 序列与正式评估不同，
+    结果是**不可比**的，别拿它的数字做结论。
+    """
     rng = random.Random(20261030)
     win = 0
     for t in range(n):
         res = play(pop_h_i, pop_e_j, P, seed=t + 1, visible=1)
-        win += 1 if res["caught"] else 0
+        win += 1 if res["winner"] == "hunter" else 0
     return win / max(1, n)
 
 
