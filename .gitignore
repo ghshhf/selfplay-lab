@@ -1,0 +1,17 @@
+# 运行时产物
+__pycache__/
+*.py[cod]
+*.log
+evo/
+gen_cache.json
+
+# duel 域的大数据（可用 collect_duel.py 重新生成）
+domains/duel/duel.csv
+domains/duel/duel_meta.json
+domains/duel/duel_replay.html
+domains/duel/shards/
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,4 @@
+{"gen": 9, "levels": {"size": 1, "depth": 0, "hidden": 0, "scaffold": 1, "resource": 0}, "describe": "函数体积 脚手架约束"}
+{"gen": 10, "levels": {"size": 1, "depth": 0, "hidden": 1, "scaffold": 1, "resource": 0}, "describe": "函数体积 报错隐蔽度 脚手架约束"}
+{"gen": 11, "levels": {"size": 1, "depth": 0, "hidden": 1, "scaffold": 1, "resource": 1}, "describe": "函数体积 报错隐蔽度 脚手架约束 时空约束"}
+{"gen": 12, "levels": {"size": 1, "depth": 1, "hidden": 1, "scaffold": 1, "resource": 1}, "describe": "函数体积 依赖深度 报错隐蔽度 脚手架约束 时空约束"}

@@ -1,0 +1,47 @@
+{
+ "gen": 93,
+ "ts": "2026-10-29 21:34:00",
+ "gene": [
+  0.0,
+  0.87122,
+  0.93333,
+  0.0,
+  1.03,
+  1.0,
+  0.19815,
+  0.7346,
+  0.44729
+ ],
+ "gene_names": [
+  "weapon",
+  "aggr",
+  "guard",
+  "kick",
+  "dist",
+  "react",
+  "idle",
+  "loot",
+  "avoid"
+ ],
+ "params": {
+  "weapon": "none",
+  "aggression": 0.8712188587760218,
+  "guard_bias": 0.9333255461462587,
+  "kick_bias": 0.0,
+  "prefer_dist": 1.0299961423448598,
+  "react": 1,
+  "idle_bias": 0.19814970412251073,
+  "loot_bias": 0.7345977901870911,
+  "avoid_bias": 0.44729478637568465
+ },
+ "weapon": "none",
+ "style": "反击",
+ "style_readable": "徒手持贴身猛攻 / 见招就挡 / 几乎只用拳 / 保持 1.0m / 反应1帧 爱捡道具",
+ "fit": 0.94245,
+ "champ_round_winrate": 0.8,
+ "elo": 1397.6,
+ "pop_max_elo": 1555.4,
+ "difficulty": 0,
+ "difficulty_dims": [],
+ "note": "直接填进 bot.Bot(**params) 即可复现；gene 是同份参数的原始浮点，手机侧按需取。"
+}
