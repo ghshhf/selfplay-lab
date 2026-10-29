@@ -14,9 +14,13 @@ class World:
     def __init__(self):
         self.levels = {k: 0 for k in DIMENSIONS}
         self.levels["size"] = 1  # 开局只开函数体积
+        # 上一代冠军基因 {基因名: 原始值}；None = 随机出题（对照模式）。
+        # 世界据此定向出题：冠军不爱读码，就多出必须通读才改得对的题。
+        self.champ = None
     def make_template(self, gen):
         ec = {k: self.levels[k] for k in DIMENSIONS}
         ec["seed"] = gen * 31 + 1
+        ec["champ"] = self.champ
         return ec
     def describe(self):
         parts = [DIM_LABEL[k] for k in DIMENSIONS if self.levels[k] > 0]
@@ -61,13 +65,21 @@ class World:
         return True
 
 def evaluate(pop, ec, rng, reps=2):
+    """评估种群。
+
+    ec["champ"] 非 None 时，出题走对抗模式（见 adversarial.py）。
+    返回 (fits, counter_txt)：counter_txt 记录这一代世界在针对冠军的什么倾向，
+    用于事后核账——对抗到底生效了没有，不能只靠嘴说。
+    """
     fits = []
+    counter_txt = ""
     for g in pop:
         bot = Bot(g)
         bot.rng = random.Random(int(rng.integers(0, 1 << 30)))
         env = CodeEnv(seed=ec["seed"], size=ec["size"], depth=ec["depth"],
                       hidden=ec["hidden"], scaffold=ec["scaffold"],
-                      resource=ec["resource"])
+                      resource=ec["resource"], champ=ec.get("champ"))
+        counter_txt = getattr(env, "counter", "") or ""
         # 多次重试取最好（模拟 agent 多次尝试修复）
         best_passed = False
         best_error = ""
@@ -87,7 +99,7 @@ def evaluate(pop, ec, rng, reps=2):
         if best_ms > 3000:
             fit -= 0.05
         fits.append(fit)
-    return np.array(fits)
+    return np.array(fits), counter_txt
 
 def next_gen(pop, fits, rng, elite=0.25, immigrant=0.15, mutation=1.0):
     n = len(pop)
@@ -170,7 +182,7 @@ def main():
         ec = world.make_template(gen)
         # Bot 列表转基因数组供 evaluate 读取（兼容旧接口）
         genes = np.array([b.gene for b in pop])
-        fits = evaluate(genes, ec, rng, reps=args.reps)
+        fits, counter_txt = evaluate(genes, ec, rng, reps=args.reps)
         best_i = int(np.argmax(fits))
         best_fit = float(fits[best_i])
         ema = best_fit if ema is None else 0.85 * ema + 0.15 * best_fit
@@ -178,6 +190,11 @@ def main():
         best_hist.append(best_fit)
         div = diversity(genes)
         champ = pop[best_i]
+
+        # 世界记住这一代冠军，下一代据此定向出题（对抗模式）。
+        # 放在名人堂之前：本代冠军一旦确定，下一代的世界就要针对它。
+        world.champ = {GENE_NAMES[i]: float(champ.gene[i])
+                       for i in range(len(GENE_NAMES))}
 
         # 名人堂
         is_new = (not hof) or np.linalg.norm(np.array(champ.gene) - np.array(hof[-1].gene)) > 1e-6
@@ -201,10 +218,11 @@ def main():
         mean_fit = float(np.mean(fits))
         with open(LOG, "a", encoding="utf-8") as f:
             f.write("[gen %04d] 难度Lv%d(%s) best %.3f ema %.3f mean %.3f div %.3f "
-                    "hof %d 冠军 %s (%.1fs)\n"
+                    "hof %d 冠军 %s (%.1fs)%s\n"
                     % (gen, world.level_no(), world.describe(), best_fit, ema,
                        mean_fit, div, len(hof),
-                       " ".join("%.2f" % x for x in champ.gene), sec))
+                       " ".join("%.2f" % x for x in champ.gene), sec,
+                       (" | 针对: " + counter_txt) if counter_txt else ""))
         with open(TSV, "a", encoding="utf-8") as f:
             f.write("%d\t%.4f\t%.4f\t%.4f\t%.4f\t%s\t%d\t%.1f\n"
                     % (gen, best_fit, ema, mean_fit, div,

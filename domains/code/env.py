@@ -990,7 +990,7 @@ if __name__ == "__main__":
 
 class CodeEnv:
     def __init__(self, seed=1, size=1, depth=1, hidden=1, scaffold=1, resource=1,
-                 use_tasks=True):
+                 use_tasks=True, champ=None):
         self.rng = random.Random(seed)
         self.size = size
         self.depth = depth
@@ -999,10 +999,11 @@ class CodeEnv:
         self.resource = resource
         self.use_tasks = use_tasks
         if use_tasks:
-            # 任务自举：golden 池 + bug 注入器，难度维度在 make_task 里生效
+            # 任务自举：golden 池 + bug 注入器，难度维度在 make_task 里生效。
+            # champ 非 None 时世界进入对抗模式，挑克制该冠军的 bug。
             t = tasks.make_task(self.rng, {"size": size, "depth": depth,
                                           "hidden": hidden, "scaffold": scaffold,
-                                          "resource": resource})
+                                          "resource": resource}, champ=champ)
             self.project = {"id": t["id"], "name": t["id"]}
             self.files = t["files"]
             self.entry = t["entry"]
@@ -1010,6 +1011,7 @@ class CodeEnv:
             self.bug_desc = t["bug_desc"]
             self.hidden_flag = t["hidden"]      # True = 盲改（不把报错喂给生成器）
             self.editable = t["editable"]
+            self.counter = t.get("counter", "")  # 对抗模式：这题在克制冠军什么
         else:
             # 兼容旧死题库（探针/回归用）
             self.project = self.rng.choice(PROJECTS)

@@ -1,0 +1,577 @@
+{
+  "summary": {
+    "n": 50,
+    "reps": 1,
+    "seed": 401,
+    "levels": {
+      "size": 3,
+      "depth": 3,
+      "hidden": 3,
+      "scaffold": 3,
+      "resource": 3
+    },
+    "A_pass": 49,
+    "A_rate": 0.98,
+    "B_pass": 49,
+    "B_rate": 0.98,
+    "delta_rate": 0.0,
+    "A_ms_avg": 240,
+    "B_ms_avg": 247,
+    "dist_A": {
+      "palindrome::keep_symbol": 5,
+      "topo::no_cycle_check": 5,
+      "bfs::missing_plus_one": 4,
+      "dijkstra::dist_off_by_one": 4,
+      "topo::dup_indeg": 3,
+      "fib::off_by_one": 3,
+      "bisect::off_by_one": 3,
+      "bisect::wrong_return": 3,
+      "quicksort::wrong_bound": 3,
+      "dedupe::off_by_one": 2,
+      "calc::mul_minus_one": 2,
+      "dedupe::unordered": 2,
+      "fib::base_wrong": 2,
+      "calc::add_off_by_one": 2,
+      "calc::divide_none": 1,
+      "palindrome::no_lower": 1,
+      "merge::boundary_off": 1,
+      "stack::wrong_pair": 1,
+      "lru::wrong_capacity": 1,
+      "merge::no_merge": 1,
+      "kadane::no_reset": 1
+    },
+    "dist_B": {
+      "topo::dup_indeg": 5,
+      "bisect::off_by_one": 5,
+      "dedupe::off_by_one": 4,
+      "bfs::missing_plus_one": 4,
+      "dijkstra::dist_off_by_one": 4,
+      "fib::base_wrong": 3,
+      "palindrome::keep_symbol": 3,
+      "palindrome::no_lower": 3,
+      "quicksort::wrong_bound": 3,
+      "topo::no_cycle_check": 3,
+      "calc::divide_none": 2,
+      "fib::off_by_one": 2,
+      "calc::mul_minus_one": 2,
+      "bisect::wrong_return": 1,
+      "calc::add_off_by_one": 1,
+      "merge::boundary_off": 1,
+      "stack::no_close_check": 1,
+      "lru::no_reorder": 1,
+      "merge::no_merge": 1,
+      "kadane::init_zero": 1
+    },
+    "sec": 27.4,
+    "coverage": {
+      "total": 24,
+      "labeled": 22,
+      "missing": [
+        "calc::add_off_by_one",
+        "calc::mul_minus_one"
+      ]
+    }
+  },
+  "rows": [
+    {
+      "seed": 401,
+      "A_task": "topo::dup_indeg",
+      "A_pass": true,
+      "A_ms": 315,
+      "B_task": "topo::dup_indeg",
+      "B_pass": true,
+      "B_ms": 261,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 418,
+      "A_task": "fib::off_by_one",
+      "A_pass": true,
+      "A_ms": 148,
+      "B_task": "fib::base_wrong",
+      "B_pass": true,
+      "B_ms": 311,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 435,
+      "A_task": "dedupe::off_by_one",
+      "A_pass": true,
+      "A_ms": 237,
+      "B_task": "dedupe::off_by_one",
+      "B_pass": true,
+      "B_ms": 398,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 452,
+      "A_task": "fib::off_by_one",
+      "A_pass": true,
+      "A_ms": 202,
+      "B_task": "fib::base_wrong",
+      "B_pass": true,
+      "B_ms": 214,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 469,
+      "A_task": "palindrome::keep_symbol",
+      "A_pass": true,
+      "A_ms": 270,
+      "B_task": "palindrome::keep_symbol",
+      "B_pass": true,
+      "B_ms": 220,
+      "B_counter": "read_first(0.19)→read_first 偏高 test_cover(0.33)→test_cover 偏高"
+    },
+    {
+      "seed": 486,
+      "A_task": "bisect::off_by_one",
+      "A_pass": true,
+      "A_ms": 224,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 184,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 503,
+      "A_task": "bisect::off_by_one",
+      "A_pass": true,
+      "A_ms": 200,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 232,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 520,
+      "A_task": "calc::divide_none",
+      "A_pass": true,
+      "A_ms": 217,
+      "B_task": "calc::divide_none",
+      "B_pass": true,
+      "B_ms": 214,
+      "B_counter": "test_cover(0.33)→test_cover 偏高 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 537,
+      "A_task": "bfs::missing_plus_one",
+      "A_pass": true,
+      "A_ms": 279,
+      "B_task": "bfs::missing_plus_one",
+      "B_pass": true,
+      "B_ms": 286,
+      "B_counter": "read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 554,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 244,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 304,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 571,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 261,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 256,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 588,
+      "A_task": "bfs::missing_plus_one",
+      "A_pass": true,
+      "A_ms": 335,
+      "B_task": "bfs::missing_plus_one",
+      "B_pass": true,
+      "B_ms": 432,
+      "B_counter": "read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 605,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 282,
+      "B_task": "bisect::wrong_return",
+      "B_pass": true,
+      "B_ms": 256,
+      "B_counter": "test_cover(0.33)→test_cover 偏高 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 622,
+      "A_task": "palindrome::no_lower",
+      "A_pass": true,
+      "A_ms": 258,
+      "B_task": "palindrome::no_lower",
+      "B_pass": true,
+      "B_ms": 330,
+      "B_counter": "read_first(0.19)→read_first 偏高 test_cover(0.33)→test_cover 偏高"
+    },
+    {
+      "seed": 639,
+      "A_task": "bfs::missing_plus_one",
+      "A_pass": true,
+      "A_ms": 329,
+      "B_task": "bfs::missing_plus_one",
+      "B_pass": true,
+      "B_ms": 251,
+      "B_counter": "read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 656,
+      "A_task": "quicksort::wrong_bound",
+      "A_pass": true,
+      "A_ms": 222,
+      "B_task": "quicksort::wrong_bound",
+      "B_pass": true,
+      "B_ms": 266,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 673,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 430,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 318,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 690,
+      "A_task": "fib::off_by_one",
+      "A_pass": true,
+      "A_ms": 215,
+      "B_task": "fib::off_by_one",
+      "B_pass": true,
+      "B_ms": 313,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 707,
+      "A_task": "calc::mul_minus_one",
+      "A_pass": true,
+      "A_ms": 303,
+      "B_task": "calc::add_off_by_one",
+      "B_pass": true,
+      "B_ms": 473,
+      "B_counter": ""
+    },
+    {
+      "seed": 724,
+      "A_task": "bfs::missing_plus_one",
+      "A_pass": true,
+      "A_ms": 344,
+      "B_task": "bfs::missing_plus_one",
+      "B_pass": true,
+      "B_ms": 316,
+      "B_counter": "read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 741,
+      "A_task": "dedupe::unordered",
+      "A_pass": true,
+      "A_ms": 331,
+      "B_task": "dedupe::off_by_one",
+      "B_pass": true,
+      "B_ms": 248,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 758,
+      "A_task": "fib::base_wrong",
+      "A_pass": true,
+      "A_ms": 198,
+      "B_task": "fib::base_wrong",
+      "B_pass": true,
+      "B_ms": 179,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 775,
+      "A_task": "topo::dup_indeg",
+      "A_pass": true,
+      "A_ms": 331,
+      "B_task": "topo::no_cycle_check",
+      "B_pass": true,
+      "B_ms": 400,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 792,
+      "A_task": "merge::boundary_off",
+      "A_pass": true,
+      "A_ms": 144,
+      "B_task": "merge::boundary_off",
+      "B_pass": true,
+      "B_ms": 162,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 809,
+      "A_task": "calc::add_off_by_one",
+      "A_pass": true,
+      "A_ms": 166,
+      "B_task": "calc::mul_minus_one",
+      "B_pass": true,
+      "B_ms": 183,
+      "B_counter": ""
+    },
+    {
+      "seed": 826,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 303,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 196,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 843,
+      "A_task": "quicksort::wrong_bound",
+      "A_pass": true,
+      "A_ms": 246,
+      "B_task": "quicksort::wrong_bound",
+      "B_pass": true,
+      "B_ms": 251,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 860,
+      "A_task": "bisect::off_by_one",
+      "A_pass": true,
+      "A_ms": 179,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 261,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 877,
+      "A_task": "dedupe::off_by_one",
+      "A_pass": true,
+      "A_ms": 180,
+      "B_task": "dedupe::off_by_one",
+      "B_pass": true,
+      "B_ms": 167,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 894,
+      "A_task": "topo::no_cycle_check",
+      "A_pass": true,
+      "A_ms": 213,
+      "B_task": "topo::dup_indeg",
+      "B_pass": true,
+      "B_ms": 313,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 911,
+      "A_task": "topo::no_cycle_check",
+      "A_pass": true,
+      "A_ms": 307,
+      "B_task": "topo::dup_indeg",
+      "B_pass": true,
+      "B_ms": 264,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 928,
+      "A_task": "palindrome::keep_symbol",
+      "A_pass": true,
+      "A_ms": 148,
+      "B_task": "palindrome::no_lower",
+      "B_pass": true,
+      "B_ms": 232,
+      "B_counter": "read_first(0.19)→read_first 偏高 test_cover(0.33)→test_cover 偏高"
+    },
+    {
+      "seed": 945,
+      "A_task": "stack::wrong_pair",
+      "A_pass": true,
+      "A_ms": 172,
+      "B_task": "stack::no_close_check",
+      "B_pass": true,
+      "B_ms": 166,
+      "B_counter": "refactor(0.25)→refactor 偏低 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 962,
+      "A_task": "palindrome::keep_symbol",
+      "A_pass": true,
+      "A_ms": 219,
+      "B_task": "palindrome::keep_symbol",
+      "B_pass": true,
+      "B_ms": 178,
+      "B_counter": "read_first(0.19)→read_first 偏高 test_cover(0.33)→test_cover 偏高"
+    },
+    {
+      "seed": 979,
+      "A_task": "topo::dup_indeg",
+      "A_pass": true,
+      "A_ms": 251,
+      "B_task": "topo::dup_indeg",
+      "B_pass": true,
+      "B_ms": 252,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 996,
+      "A_task": "topo::no_cycle_check",
+      "A_pass": true,
+      "A_ms": 238,
+      "B_task": "topo::dup_indeg",
+      "B_pass": true,
+      "B_ms": 208,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 1013,
+      "A_task": "topo::no_cycle_check",
+      "A_pass": true,
+      "A_ms": 321,
+      "B_task": "topo::no_cycle_check",
+      "B_pass": true,
+      "B_ms": 211,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 1030,
+      "A_task": "calc::add_off_by_one",
+      "A_pass": true,
+      "A_ms": 233,
+      "B_task": "calc::divide_none",
+      "B_pass": true,
+      "B_ms": 256,
+      "B_counter": "test_cover(0.33)→test_cover 偏高 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 1047,
+      "A_task": "lru::wrong_capacity",
+      "A_pass": true,
+      "A_ms": 219,
+      "B_task": "lru::no_reorder",
+      "B_pass": true,
+      "B_ms": 218,
+      "B_counter": "refactor(0.25)→refactor 偏低 edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 1064,
+      "A_task": "dedupe::unordered",
+      "A_pass": true,
+      "A_ms": 277,
+      "B_task": "dedupe::off_by_one",
+      "B_pass": true,
+      "B_ms": 160,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 1081,
+      "A_task": "topo::no_cycle_check",
+      "A_pass": true,
+      "A_ms": 195,
+      "B_task": "topo::no_cycle_check",
+      "B_pass": true,
+      "B_ms": 210,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 1098,
+      "A_task": "bisect::wrong_return",
+      "A_pass": true,
+      "A_ms": 178,
+      "B_task": "bisect::off_by_one",
+      "B_pass": true,
+      "B_ms": 173,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 1115,
+      "A_task": "palindrome::keep_symbol",
+      "A_pass": true,
+      "A_ms": 145,
+      "B_task": "palindrome::no_lower",
+      "B_pass": true,
+      "B_ms": 149,
+      "B_counter": "read_first(0.19)→read_first 偏高 test_cover(0.33)→test_cover 偏高"
+    },
+    {
+      "seed": 1132,
+      "A_task": "dijkstra::dist_off_by_one",
+      "A_pass": true,
+      "A_ms": 178,
+      "B_task": "dijkstra::dist_off_by_one",
+      "B_pass": true,
+      "B_ms": 213,
+      "B_counter": "read_first(0.19)→read_first 偏高 retry_cap(0.36)→retry_cap 偏低"
+    },
+    {
+      "seed": 1149,
+      "A_task": "merge::no_merge",
+      "A_pass": false,
+      "A_ms": 217,
+      "B_task": "merge::no_merge",
+      "B_pass": false,
+      "B_ms": 256,
+      "B_counter": "read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 1166,
+      "A_task": "quicksort::wrong_bound",
+      "A_pass": true,
+      "A_ms": 195,
+      "B_task": "quicksort::wrong_bound",
+      "B_pass": true,
+      "B_ms": 245,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低 read_first(0.19)→read_first 偏高"
+    },
+    {
+      "seed": 1183,
+      "A_task": "fib::base_wrong",
+      "A_pass": true,
+      "A_ms": 301,
+      "B_task": "fib::off_by_one",
+      "B_pass": true,
+      "B_ms": 162,
+      "B_counter": "edit_scope(0.47)→edit_scope 偏低"
+    },
+    {
+      "seed": 1200,
+      "A_task": "palindrome::keep_symbol",
+      "A_pass": true,
+      "A_ms": 211,
+      "B_task": "palindrome::keep_symbol",
+      "B_pass": true,
+      "B_ms": 167,
+      "B_counter": "read_first(0.19)→read_first 偏高 test_cover(0.33)→test_cover 偏高"
+    },
+    {
+      "seed": 1217,
+      "A_task": "calc::mul_minus_one",
+      "A_pass": true,
+      "A_ms": 220,
+      "B_task": "calc::mul_minus_one",
+      "B_pass": true,
+      "B_ms": 193,
+      "B_counter": ""
+    },
+    {
+      "seed": 1234,
+      "A_task": "kadane::no_reset",
+      "A_pass": true,
+      "A_ms": 166,
+      "B_task": "kadane::init_zero",
+      "B_pass": true,
+      "B_ms": 227,
+      "B_counter": "read_first(0.19)→read_first 偏高 edit_scope(0.47)→edit_scope 偏低"
+    }
+  ]
+}

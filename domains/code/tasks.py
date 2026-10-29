@@ -20,6 +20,8 @@ mutate 用确定性字符串替换（与 golden 源码里的确切文本对应�
 import random
 import ast
 
+from adversarial import pick_bug_pattern, explain_pick
+
 
 # ---------------------------------------------------------------------------
 # golden 族：每族 = 正确实现 files + 测试入口 entry + 若干 bug 模式
@@ -553,16 +555,23 @@ def _deepen(files, bug_file):
     return files
 
 
-def make_task(rng, dims):
+def make_task(rng, dims, champ=None):
     """程序化生成一项编程任务。
 
     dims: dict，含 size/depth/hidden/scaffold/resource（来自 World 难度维度）。
-    返回 {id, files, entry, bug_file, bug_desc, hidden, editable}：
+
+    champ: {基因名: 原始值} | None —— 上一代冠军基因。
+        传入 → 世界进入**对抗模式**：按 counters 标签加权，优先挑克制该冠军
+               行为倾向的 bug（如冠军不爱读码，就多出「必须通读才改得对」的题）。
+        不传 → 保持改造前的**均匀随机**，与对抗模式一字之差，可直接对照。
+
+    返回 {id, files, entry, bug_file, bug_desc, hidden, editable, counter}：
       - hidden: bool，True 表示盲改（不把测试报错喂给生成器）
       - editable: 生成器可修改的文件名列表（scaffold 维度预留）
+      - counter: str，对抗模式下记录「这题在克制冠军的什么」，便于事后核账
     """
     fam = rng.choice(GOLDEN)
-    bp = rng.choice(fam["bug_patterns"])
+    bp = pick_bug_pattern(champ, fam, rng)
     files = dict(fam["files"])
     files = bp["mutate"](files, rng)
     bug_file = fam["bug_file"]
@@ -614,6 +623,7 @@ def make_task(rng, dims):
         "bug_desc": bug_desc,
         "hidden": blind,
         "editable": editable,
+        "counter": explain_pick(champ, fam, bp, None),
     }
 
 
