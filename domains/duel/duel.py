@@ -23,6 +23,7 @@ MAX_HP = 100.0
 
 # ---------------- 动作 ----------------
 FWD, BACK, PUNCH, KICK, BLOCK, IDLE = range(6)
+HIGH_KICK = 6   # internal technique used by the articulated model, not a button
 ACTIONS = (FWD, BACK, PUNCH, KICK, BLOCK, IDLE)
 ACTION_NAMES = ("FWD", "BACK", "PUNCH", "KICK", "BLOCK", "IDLE")
 
@@ -49,7 +50,8 @@ FRICTION = 6.0               # 击退衰减（1/s）
 #   label   : 人类可读
 WEAPONS = {
     "none":    {"attacks": {PUNCH: (6, 3, 9, 1.15, 7.0),
-                            KICK: (11, 3, 16, 1.50, 11.0)},
+                            KICK: (11, 3, 16, 1.50, 11.0),
+                            HIGH_KICK: (12, 4, 18, 0.83, 12.5)},
                 "block_mul": 0.28, "speed_mul": 1.0, "hurt_add": 0, "label": "徒手"},
     "polearm": {"attacks": {PUNCH: (8, 3, 10, 2.80, 9.0)},   # 长矛：只有长戳，射程 2.8
                 "block_mul": 0.28, "speed_mul": 1.0, "hurt_add": 0, "label": "长矛"},
@@ -320,10 +322,8 @@ class Duel:
         for me, opp, act, idx in ((self.p0, self.p1, a0, 0), (self.p1, self.p0, a1, 1)):
             self._apply_action(me, opp, int(act), idx, rewards)
 
-        # 2) 攻击活跃帧的命中判定
-        for me, opp, idx in ((self.p0, self.p1, 0), (self.p1, self.p0, 1)):
-            if me.state == S_ATTACK and me.phase == "active" and not me.landed:
-                self._try_hit(me, opp, 1 - idx, rewards)
+        # 2) 攻击活跃帧的命中判定（子类可覆写 _combat 换命中模型）
+        self._combat(rewards)
 
         # 3) 物理积分（位置 + 击退衰减 + 边界 + 墙 + 身位分离）
         self._integrate()
@@ -371,6 +371,12 @@ class Duel:
             "swings": tuple(self.n_swings),
         }
         return rewards, done, info
+
+    def _combat(self, rewards):
+        """默认命中模型：出招活跃帧内，按水平距离 + 射程判定。"""
+        for me, opp, idx in ((self.p0, self.p1, 0), (self.p1, self.p0, 1)):
+            if me.state == S_ATTACK and me.phase == "active" and not me.landed:
+                self._try_hit(me, opp, 1 - idx, rewards)
 
     # ---------------- 内部 ----------------
     def _wall_blocks(self, x0, x1):

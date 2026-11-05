@@ -19,7 +19,8 @@ class Bot:
                  react=4,             # 每几帧决策一次（反应延迟）
                  idle_bias=0.12,      # 没事干时发呆/走位的比例
                  loot_bias=0.30,      # 主动去捡道具的倾向（0~1）
-                 avoid_bias=0.30):    # 主动绕开陷阱的倾向（0~1）
+                 avoid_bias=0.30,     # 主动绕开陷阱的倾向（0~1）
+                 reach_scale=1.0):    # 射程缩放：肢体版的有效射程比旧规则短
         self.rng = rng or np.random.default_rng()
         self.weapon = str(weapon)
         self.aggression = float(aggression)
@@ -30,6 +31,7 @@ class Bot:
         self.idle_bias = float(idle_bias)
         self.loot_bias = float(loot_bias)
         self.avoid_bias = float(avoid_bias)
+        self.reach_scale = float(reach_scale)
         self.kind = "param"
         self._act = D.IDLE
         self._wait = 0
@@ -81,7 +83,7 @@ class Bot:
 
         dist = abs(opp.x - me.x)
         threat = (opp.state == D.S_ATTACK and opp.phase in ("windup", "active"))
-        reach = me.max_reach()        # 武器射程自适应（长矛 2.8 / 投枪 4.0 / 徒手 1.5）
+        reach = me.max_reach() * self.reach_scale   # 武器射程自适应（长矛 2.8 / 投枪 4.0 / 徒手 1.5）
 
         # 0) 陷阱规避（最高优先）：最近陷阱很近且 avoid 高 → 远离陷阱。
         #    踩到硬直/掉血不划算，进化出的 avoid_bias 决定多积极绕。
@@ -123,7 +125,7 @@ class Bot:
         #    （v1 是强制用踢，v2 初版漏了这层，命中率从 88% 掉到 27%）。
         if dist <= reach and self.rng.random() < self.aggression:
             usable = [m for m in me.attacks().keys()
-                      if me.reach_of(m) >= dist - 1e-6]
+                      if me.reach_of(m) * self.reach_scale >= dist - 1e-6]
             if not usable:
                 usable = list(me.attacks().keys())
             if D.KICK in usable and self.rng.random() < self.kick_bias * 0.5:

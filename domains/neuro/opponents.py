@@ -70,8 +70,9 @@ class RandomOpponent:
 
 
 class ScriptedOpponent:
-    def __init__(self, gene, seed=0):
+    def __init__(self, gene, seed=0, reach_scale=1.0):
         self.gene = dict(gene)
+        self.reach_scale = float(reach_scale)
         self.rng = np.random.default_rng(seed)
         self.bot = None
 
@@ -89,6 +90,7 @@ class ScriptedOpponent:
             idle_bias=g.get("idle", 0.2),
             loot_bias=g.get("loot", 0.2),
             avoid_bias=g.get("avoid", 0.2),
+            reach_scale=self.reach_scale,
         )
 
     def act(self, me, opp, obs):
@@ -98,7 +100,7 @@ class ScriptedOpponent:
 ARENA_HALF = 4.0  # duel.py normalises x by this, so obs[12] = dx_meters / 4
 
 
-def heuristic_action(obs) -> int:
+def heuristic_action(obs, pocket: bool = False) -> int:
     """A cheap scripted expert used only to bootstrap the neural policy.
 
     Observation layout (self-centric, 15 dims)::
@@ -116,9 +118,16 @@ def heuristic_action(obs) -> int:
     makes cloning work -- a policy with strategy switches near the same distance
     teaches the network an ambiguous boundary, and the cloned policy then whiffs
     kicks from outside reach.
+
+    ``pocket=True`` is for the articulated arena: walk into jab range (0.95 m)
+    and punch.  The jab's 4-frame windup and chin-height contact make the head
+    the primary target, which is exactly the behaviour we want the clone to
+    inherit.  The default keeps the 1-D duel's out-fighting kick range.
     """
     dx = abs(float(obs[12])) * ARENA_HALF
-    return 0 if dx > 1.30 else 3  # FWD until kick range (1.50), then KICK
+    if pocket:
+        return 2 if dx <= 0.95 else 0
+    return 0 if dx > 1.30 else 3
 
 
 class SnapshotOpponent:

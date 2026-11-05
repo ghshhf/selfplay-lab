@@ -22,7 +22,7 @@
 | **duel** | 两个火柴人徒手对打（纯 numpy 物理） | 9 维基因（武器/攻击性/格挡/踢/距离/反应/待机/捡道具/绕陷阱） | 198 | Elo 制 | fit 0.508 → 1.126，Elo 1573，流派「反击×20」 |
 | **sgs** | 三国杀式卡牌单挑 | 4 维基因（攻击性/防守/回血/距离） | 2670 | Lv4（4 维全开） | fit 0.660 —— **零满分，还在爬** |
 | **gomoku** | 五子棋 15×15，对手是 Rapfi（Elo 3073） | 双头网络 48 通道（policy 225 + value 1）+ VCF 搜索 | 300+ 局实测 | 固定强敌 | **0 胜 / 4.9%**，存活 25.5 → **48.2 手** |
-| **neuro** | 同 duel 场景，双方换成神经网络策略 | 15 维观测 → MLP(64) → 6 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
+| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞 | 15/23 维观测 → MLP(64) → 6 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
 
 > 代数为各域 `evolve.log` / `progress.tsv` 的实时值，截至 2026-10-29 22:10；gomoku 为 2026-10-30 凌晨实测。
 > 前三个域当时都在后台跑，数字会继续长。
@@ -115,6 +115,33 @@ selfplay/core/recorder.py  metrics.jsonl + progress.tsv + 可 resume 的 state
 
 **关键修复**：`heuristic_action` 里的距离必须按 `obs[12] * 4.0` 还原成米（`ARENA_HALF = 4.0`），不是 `/8`。旧写法让专家走到贴脸才出手，44% 的对局超时，克隆出来的是"踢不到"的坏策略。
 
+#### 肢体碰撞（`--env articulated`）
+
+默认 neuro 的命中仍是"水平距离 ≤ 射程"。`domains/duel/limbs.py` + `articulated.py` 把它换成肢体几何：
+
+- 2D 矢状面运动学：肩/肘、髋/膝角度 → 手、脚坐标；角度只由状态/招式/计时决定，不额外存状态，replay 仍可从 duel 状态重建
+- 命中用胶囊（前臂-拳 / 胫-脚）对躯干、头、双腿做 segment-segment 距离；头 1.35x、躯干 1.0x、腿 0.75x 伤害
+- 格挡是真正的前臂护体胶囊：攻击必须够到护体才减伤，而不是"按了格挡就免伤"
+- 双方活跃肢体在空档相遇 → **clash**：两招同时取消、无人掉血；若任一方已经够到躯干，则按同时命中（trade）处理
+- 三种招式按真实格斗的"速度换伤害"设计：直拳 4/3/7 帧、5.5 伤害；前踢 7/4/11 帧、8.5；头踢 12/4/18 帧、12.5（头 1.35x ≈ 16.9）
+- `KICK` 是一个按钮，但引擎按距离自动选招：>0.84 m 是前踢（够到躯干，射程 1.29），≤0.84 m 变成头踢（射程缩到 0.83，打头）
+- 头部是独立球体（`HEAD_Y=1.66`），未被格挡的头击额外 +6 帧硬直，并单独计入 `head_hits`
+- 观测 15 → 23 维（双方手/脚相对坐标）；`metrics.jsonl` 新增 `clashes`、`head_hits`、`eval_head_hits`
+
+**刻意缩小**：位移仍是 1D。先把肢体接触做对，再谈 2D 平台物理——否则物理 bug 和 RL bug 会混在一起。
+
+实测（`--env articulated`）：
+
+| 招式 | 起手/命中/后摇（帧） | 总时长 | 伤害 | 有效射程 |
+|---|---|---|---|---|
+| 直拳 / oi-zuki | 4 / 3 / 7 | 14（233 ms） | 5.5（头 7.4） | 1.04 m（打头 ≤0.96） |
+| 前踢 / mae geri | 7 / 4 / 11 | 22（367 ms） | 8.5 | 1.29 m（躯干/腿） |
+| 头踢 / mawashi geri | 12 / 4 / 18 | 34（567 ms） | 12.5（头 16.9） | 0.83 m（只有贴身才够得到） |
+
+BC（12 局 × 120 epoch，示范对手轮换 random/gene1/gene2/镜像）：`bc_loss 0.0827`，
+holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 一直没到饱和，课程不升级。
+36 个测试里有 20 个是肢体运动学/胶囊/接触规则用例。
+
 ---
 
 ## 三、怎么跑
@@ -189,6 +216,10 @@ python domains/neuro/train.py --no-world-model --out-dir runs/neuro_nwm
 # 关掉自动课程（评估器饱和后不升级，用于对照）
 python domains/neuro/train.py --no-curriculum --out-dir runs/neuro_flat
 
+# 肢体胶囊碰撞版本（23 维观测；示范是"贴身直拳打头"）
+python domains/neuro/train.py --env articulated --bc-episodes 12 --bc-epochs 120 \
+    --iterations 6 --episodes 6 --out-dir runs/neuro_art
+
 # 调整升级耐心 / 世界模型门控阈值
 python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015 \
     --out-dir runs/neuro_tuned
@@ -197,7 +228,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 16 个测试：反向传播、PPO、BC、课程、resume 等价、health
+python -m unittest discover -s tests -v   # 36 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触
 ```
 
 ---
@@ -212,6 +243,8 @@ domains/
            gen.py       脑与笔（brain_plan / pen_write）
            probe*.py    评估器体检
   duel/    duel.py      物理与规则（纯 numpy）
+           limbs.py     2D 矢状面肢体运动学 + 胶囊碰撞几何
+           articulated.py 肢体接触版对局（23 维观测、clash、部位伤害）
            bot.py       基因 → 策略
            evolve.py    进化主循环（含 Elo 与名人堂）
            verify.py    规则自检
@@ -229,7 +262,7 @@ domains/
            diag.py      单局诊断（逐手看命中哪道闸门）
            results/     成果：逐局记录、训练日志、两个关键权重、A/B 原始记录
            logs/        遗传搜索版（路线 A）的历史运行日志
-  neuro/   env.py       把 duel 包装成 15 维观测 / 6 动作的神经训练环境
+  neuro/   env.py       把 duel / articulated 包装成 15 / 23 维观测、6 动作的训练环境
            opponents.py random / scripted / 冻结快照 对手池 + BC 专家
            train.py     BC 预热 + PPO + league + 世界模型 + health + resume
 selfplay/
@@ -241,6 +274,7 @@ selfplay/
            manifest.py  run 元信息
            recorder.py  metrics.jsonl / progress.tsv / resume 状态
 tests/     test_neuro.py 神经栈的单元与回归测试
+           test_limbs.py 肢体运动学、胶囊几何与接触规则测试
 
 data/      前三域的进化轨迹（每 N 代抽样）+ 难度晋升历史 + 当前冠军
 docs/      FINDINGS.md —— 走通到哪一步、崩在哪、下一步怎么扩

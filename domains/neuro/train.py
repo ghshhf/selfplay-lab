@@ -40,12 +40,14 @@ from selfplay.nn.ppo import (Episode, PPOAgent, PPOConfig, Step,  # noqa: E402
 from selfplay.nn.world_model import WorldModel  # noqa: E402
 
 try:
-    from .env import N_ACTIONS, OBS_DIM, NeuralArena  # noqa: E402
+    from .env import (ARTICULATED_OBS_DIM, ArticulatedArena, N_ACTIONS,
+                      NeuralArena, OBS_DIM)  # noqa: E402
     from .opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
                             SCRIPTED_GENES, ScriptedOpponent,
                             SnapshotOpponent, heuristic_action)
 except ImportError:  # running as a script: python domains/neuro/train.py
-    from env import N_ACTIONS, OBS_DIM, NeuralArena  # noqa: E402
+    from env import (ARTICULATED_OBS_DIM, ArticulatedArena, N_ACTIONS,
+                     NeuralArena, OBS_DIM)  # noqa: E402
     from opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
                            SCRIPTED_GENES, ScriptedOpponent,
                            SnapshotOpponent, heuristic_action)
@@ -59,17 +61,27 @@ class NeuroTrainer:
         self.rng = np.random.default_rng(args.seed)
         self.next_iter = 0
 
+        if args.env == "articulated":
+            self.arena_cls = ArticulatedArena
+            self.obs_dim = ARTICULATED_OBS_DIM
+            self.reach_scale = 0.86   # limb geometry is shorter than the 1-D reach
+        else:
+            self.arena_cls = NeuralArena
+            self.obs_dim = OBS_DIM
+            self.reach_scale = 1.0
+
         self.ppo_cfg = PPOConfig(
             gamma=args.gamma, lam=args.lam, clip=args.clip,
             epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
             entropy_coef=args.entropy_coef, value_coef=args.value_coef,
             max_grad_norm=args.max_grad_norm,
         )
-        self.agent = PPOAgent(OBS_DIM, N_ACTIONS, hidden=args.hidden,
+        self.agent = PPOAgent(self.obs_dim, N_ACTIONS, hidden=args.hidden,
                               cfg=self.ppo_cfg, seed=args.seed)
         self.world_model = None
         if args.world_model:
-            self.world_model = WorldModel(OBS_DIM, N_ACTIONS, hidden=args.hidden,
+            self.world_model = WorldModel(self.obs_dim, N_ACTIONS,
+                                          hidden=args.hidden,
                                           lr=args.world_lr, seed=args.seed + 1)
 
         self.league: list[PPOAgent] = []
@@ -166,7 +178,7 @@ class NeuroTrainer:
         self.league = []
         i = 0
         while ("league%d__meta" % i) in arrays:
-            snap = PPOAgent(OBS_DIM, N_ACTIONS, hidden=self.args.hidden,
+            snap = PPOAgent(self.obs_dim, N_ACTIONS, hidden=self.args.hidden,
                             cfg=self.ppo_cfg, seed=0)
             snap.load_state_dict(arrays, "league%d" % i)
             self.league.append(snap)
@@ -175,21 +187,44 @@ class NeuroTrainer:
     # ------------------------------------------------------- imitation warm-up
     def _behavior_clone(self):
         gap = self.args.train_gap
+        pocket = self.args.env == "articulated"
         obs, acts = [], []
         demo_rng = np.random.default_rng(self.args.seed + 100003)
-        for _ in range(self.args.bc_episodes):
+        # Vary who the expert fights.  Cloning a mirror match teaches the net
+        # to read the opponent's pose instead of the distance, which then
+        # collapses against a different scripted style.
+        pool = [
+            RandomOpponent(),
+            ScriptedOpponent(SCRIPTED_GENES[0], reach_scale=self.reach_scale),
+            ScriptedOpponent(SCRIPTED_GENES[1], reach_scale=self.reach_scale),
+        ]
+        for i in range(self.args.bc_episodes):
             seed = int(demo_rng.integers(2 ** 31))
-            arena = NeuralArena(seed=seed, max_frames=self.args.max_frames,
-                                start_gap=gap)
-            o0, o1 = arena.reset(seed)
-            while True:
-                a0 = int(heuristic_action(o0))
-                a1 = int(heuristic_action(o1))
-                obs.extend([o0, o1])
-                acts.extend([a0, a1])
-                o0, o1, _r0, _r1, done, _info = arena.step(a0, a1)
-                if done:
-                    break
+            kind = i % (len(pool) + 1)
+            for side in (0, 1):
+                arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
+                                       start_gap=gap)
+                o0, o1 = arena.reset(seed)
+                opp = None
+                if kind < len(pool):
+                    opp = pool[kind]
+                    opp.reset(int(demo_rng.integers(2 ** 31)))
+                while True:
+                    if side == 0:
+                        a0 = int(heuristic_action(o0, pocket=pocket))
+                        a1 = (opp.act(arena.env.p1, arena.env.p0, o1) if opp
+                              else int(heuristic_action(o1, pocket=pocket)))
+                        obs.append(o0)
+                        acts.append(a0)
+                    else:
+                        a0 = (opp.act(arena.env.p0, arena.env.p1, o0) if opp
+                              else int(heuristic_action(o0, pocket=pocket)))
+                        a1 = int(heuristic_action(o1, pocket=pocket))
+                        obs.append(o1)
+                        acts.append(a1)
+                    o0, o1, _r0, _r1, done, _info = arena.step(a0, a1)
+                    if done:
+                        break
         if not obs:
             return None
         x = np.stack(obs).astype(np.float32)
@@ -238,12 +273,12 @@ class NeuroTrainer:
         if r < 0.80:
             pool = self._scripted_pool()
             gene = pool[int(self.rng.integers(len(pool)))]
-            return ScriptedOpponent(gene)
+            return ScriptedOpponent(gene, reach_scale=self.reach_scale)
         return RandomOpponent()
 
     # --------------------------------------------------------------- episodes
     def _play(self, opponent, seed: int, collect: bool):
-        arena = NeuralArena(seed=seed, max_frames=self.args.max_frames,
+        arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                             start_gap=self.args.train_gap)
         o0, o1 = arena.reset(seed)
         side = int(self.rng.integers(2))
@@ -287,6 +322,8 @@ class NeuroTrainer:
             "frames": arena.frames,
             "return": total_reward,
             "winner": winner,
+            "clashes": int(info.get("clashes", 0)),
+            "head_hits": int(info.get("head_hits", 0)),
         }
 
     def _collect(self, n: int, iteration: int):
@@ -294,6 +331,8 @@ class NeuroTrainer:
         outcomes = []
         frames = []
         returns = []
+        clashes = []
+        heads = []
         for k in range(n):
             opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
@@ -303,10 +342,14 @@ class NeuroTrainer:
             outcomes.append(stat["outcome"])
             frames.append(stat["frames"])
             returns.append(stat["return"])
+            clashes.append(stat["clashes"])
+            heads.append(stat["head_hits"])
         return episodes, {
             "win": float(np.mean(outcomes)) if outcomes else 0.0,
             "frames": float(np.mean(frames)) if frames else 0.0,
             "return": float(np.mean(returns)) if returns else 0.0,
+            "clashes": float(np.mean(clashes)) if clashes else 0.0,
+            "head_hits": float(np.mean(heads)) if heads else 0.0,
             "steps": int(sum(len(ep.steps) for ep in episodes)),
         }
 
@@ -315,15 +358,18 @@ class NeuroTrainer:
         # checkpoint is always scored on the same matches.
         outcomes = []
         frames = []
+        clashes = []
+        heads = []
         eval_rng = np.random.default_rng(0)
         for seed in range(2000, 2000 + n):
             for side in (0, 1):
                 if kind == "random":
                     opp = RandomOpponent()
                 else:
-                    opp = ScriptedOpponent(self._holdout_gene())
+                    opp = ScriptedOpponent(self._holdout_gene(),
+                                          reach_scale=self.reach_scale)
                 opp.reset(seed * 2 + side)
-                arena = NeuralArena(seed=seed, max_frames=self.args.max_frames,
+                arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                                     start_gap=self.args.eval_gap)
                 o0, o1 = arena.reset(seed)
                 info = {"winner": -1}
@@ -343,9 +389,13 @@ class NeuroTrainer:
                 w = int(info.get("winner", -1))
                 outcomes.append(0.5 if w < 0 else (1.0 if w == side else 0.0))
                 frames.append(arena.frames)
+                clashes.append(int(info.get("clashes", 0)))
+                heads.append(int(info.get("head_hits", 0)))
         return {
             "win": float(np.mean(outcomes)) if outcomes else 0.0,
             "frames": float(np.mean(frames)) if frames else 0.0,
+            "clashes": float(np.mean(clashes)) if clashes else 0.0,
+            "head_hits": float(np.mean(heads)) if heads else 0.0,
             "games": len(outcomes),
         }
 
@@ -379,7 +429,7 @@ class NeuroTrainer:
         return float(np.mean([self.agent.entropy_of(o) for o in obs[:128]]))
 
     def _snapshot(self):
-        snap = PPOAgent(OBS_DIM, N_ACTIONS, hidden=self.args.hidden,
+        snap = PPOAgent(self.obs_dim, N_ACTIONS, hidden=self.args.hidden,
                         cfg=self.ppo_cfg, seed=0)
         snap.load_state_dict(self.agent.state_dict(), "agent")
         self.league.append(snap)
@@ -428,6 +478,10 @@ class NeuroTrainer:
             "train_win": round(float(stats["win"]), 4),
             "train_return": round(float(stats["return"]), 2),
             "avg_frames": round(float(stats["frames"]), 1),
+            "clashes": round(float(stats["clashes"]), 2),
+            "eval_clashes": round(float(holdout["clashes"]), 2),
+            "head_hits": round(float(stats["head_hits"]), 2),
+            "eval_head_hits": round(float(holdout["head_hits"]), 2),
             "holdout_win": round(float(holdout["win"]), 4),
             "holdout_frames": round(float(holdout["frames"]), 1),
             "random_win": round(float(random_eval["win"]), 4),
@@ -463,6 +517,8 @@ class NeuroTrainer:
 
 def build_argparser():
     ap = argparse.ArgumentParser(description="Neural self-play in the duel arena")
+    ap.add_argument("--env", choices=("duel", "articulated"), default="duel",
+                    help="duel: 1-D reach check; articulated: limb-capsule contact")
     ap.add_argument("--iterations", type=int, default=10)
     ap.add_argument("--episodes", type=int, default=4)
     ap.add_argument("--max-frames", type=int, default=600)

@@ -16,8 +16,10 @@ if str(DUEL_DIR) not in sys.path:
     sys.path.insert(0, str(DUEL_DIR))
 
 import duel as D  # noqa: E402
+import articulated as A  # noqa: E402
 
 OBS_DIM = 15
+ARTICULATED_OBS_DIM = A.OBS_DIM
 N_ACTIONS = 6
 ACTION_NAMES = tuple(D.ACTION_NAMES)
 
@@ -45,3 +47,13 @@ class NeuralArena:
     @property
     def max_frames(self):
         return self.env.max_frames
+
+
+class ArticulatedArena(NeuralArena):
+    """Same interface, but contact is limb geometry (23-dim observation)."""
+
+    def __init__(self, seed=None, max_frames=1800, env_cfg=None,
+                 weapons=("none", "none"), start_gap=2.2):
+        self.env = A.ArticulatedDuel(seed=seed, max_frames=max_frames,
+                                     env_cfg=env_cfg, weapons=weapons,
+                                     start_gap=start_gap)
