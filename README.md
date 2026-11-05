@@ -163,6 +163,30 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 `metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `act_hist`（策略实际按键分布），
 用来区分"新动作可用"和"策略真的在用"。实测见 FINDINGS 第十一节。
 
+#### 自己上手打（`domains/duel/play.py`）
+
+同一个 freeform 环境，左边那个小人交给你：
+
+```bash
+# 你打算法
+python domains/duel/play.py --opponent neural --ckpt runs/neuro_free
+
+# 无键盘环境（CI / 远程）：让一个"有反应延迟的玩家"替你打，并打印每局战报
+python domains/duel/play.py --auto --rounds 8 --reaction 12 \
+    --opponent neural --ckpt runs/neuro_free
+```
+
+按键：`d` 前进、`a` 后退、`j` 直拳、`k` 踢（引擎按距离/姿态自动选前踢、头踢、低扫、飞踢）、
+`s` 下蹲、`空格` 跳、`l` 格挡、`q` 退出。界面是终端字符画：两条血条 + 俯视 12 行场地。
+
+`--auto` 不是"假 AI 陪你演戏"：它只读网络同样那 29 维观测，每 `--reaction` 帧（默认 12 ≈ 200 ms）
+才重新决策一次，不会读取引擎里的 `me.move`；判断对方踢腿只看脚的离地高度，屏幕上你也能看到。
+
+实测（10 局，`--style pressure`）：反应 12 帧时对 random 0/10、脚本 4/10、神经 0/10；
+把反应压到 2 帧（33 ms，接近键盘玩家的手感）后，random 10/10、神经 **3/10**。
+也就是说算法赢的几乎全部是"零延迟 + 每秒 60 次决策"的帧优势，而不是更聪明的战术。
+详见 FINDINGS 第十二节。
+
 ---
 
 ## 三、怎么跑
@@ -253,7 +277,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 52 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维
+python -m unittest discover -s tests -v   # 55 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维、玩家模式
 ```
 
 ---
@@ -271,6 +295,7 @@ domains/
            limbs.py     2D 矢状面肢体运动学 + 胶囊碰撞几何
            articulated.py 肢体接触版对局（23 维观测、clash、部位伤害）
            freeform.py    自由二维版：加竖直轴、跳跃/下蹲（29 维观测、8 动作）
+           play.py       玩家模式：键盘操控 / 延迟玩家 vs 神经策略
            bot.py       基因 → 策略
            evolve.py    进化主循环（含 Elo 与名人堂）
            verify.py    规则自检
@@ -302,6 +327,7 @@ selfplay/
 tests/     test_neuro.py 神经栈的单元与回归测试
            test_limbs.py 肢体运动学、胶囊几何与接触规则测试
            test_freeform.py 跳跃/下蹲/低扫/飞踢与二维物理测试
+           （含玩家模式的反应延迟与战报对账）
 
 data/      前三域的进化轨迹（每 N 代抽样）+ 难度晋升历史 + 当前冠军
 docs/      FINDINGS.md —— 走通到哪一步、崩在哪、下一步怎么扩

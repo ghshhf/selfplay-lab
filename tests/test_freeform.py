@@ -210,5 +210,45 @@ class TestEnvironmentIntegrity(unittest.TestCase):
         self.assertGreater(info["air_frames"], 10)
 
 
+class PlayModeTest(unittest.TestCase):
+    """The human seat has a reaction budget; the headless loop must obey it."""
+
+    def test_human_does_not_act_before_reaction_window(self):
+        from domains.duel.play import HumanPlayer
+        h = HumanPlayer(style="counter", reaction=12)
+        h.reset(0)
+        obs = np.zeros(OBS_DIM, dtype=np.float32)
+        obs[12] = 0.3          # opponents 1.2 m away
+        obs[3] = 0.0
+        for _ in range(11):
+            self.assertEqual(h.act(obs), IDLE)
+        acts = {h.act(obs) for _ in range(30)}
+        self.assertTrue(acts.issubset({FWD, BACK, PUNCH, KICK, BLOCK, IDLE}))
+
+    def test_auto_rounds_terminate_and_attribute_damage(self):
+        import argparse
+        from domains.duel import play as P
+        args = argparse.Namespace(rounds=2, seed=1, reaction=12, style="counter",
+                                  quiet=True, json="", max_frames=900)
+        arena = FreeformDuel(seed=1, max_frames=900)
+        opp = P.RandomOpponent(seed=1)
+        summary = P.auto(args, arena, opp)
+        self.assertEqual(len(summary), 2)
+        for s in summary:
+            self.assertGreater(s["frames"], 0)
+            # no healing in the default arena, so HP lost == damage taken
+            self.assertAlmostEqual(s["dealt"][0], 100.0 - s["hp"][1], places=4)
+            self.assertAlmostEqual(s["dealt"][1], 100.0 - s["hp"][0], places=4)
+
+    def test_renderer_draws_bars_and_both_fighters(self):
+        from domains.duel.play import render
+        env = freeze(1.0)
+        text = render(env, "test", "neural")
+        self.assertIn("HP", text)
+        self.assertIn("O", text)
+        self.assertIn("#", text)
+        self.assertGreaterEqual(len(text.splitlines()), 8)
+
+
 if __name__ == "__main__":
     unittest.main()

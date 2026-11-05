@@ -219,6 +219,15 @@ class TestEnvironment(unittest.TestCase):
         # total damage dealt must equal the HP that disappeared
         lost = (100.0 - env_a.p0.hp) + (100.0 - env_a.p1.hp)
         self.assertAlmostEqual(sum(env_a.damage_dealt), lost, places=6)
+        # ...and each counter must belong to the side that threw the attack
+        self.assertAlmostEqual(env_a.damage_dealt[0], 100.0 - env_a.p1.hp,
+                               places=6)
+        self.assertAlmostEqual(env_a.damage_dealt[1], 100.0 - env_a.p0.hp,
+                               places=6)
+        for side in (0, 1):
+            self.assertAlmostEqual(
+                sum(e[2] for e in env_a.events if e[4] == side),
+                env_a.damage_dealt[side], places=6)
         self.assertIn("clashes", info_a)
         self.assertIn("parts", info_a)
 

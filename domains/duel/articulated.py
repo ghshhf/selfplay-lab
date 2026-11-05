@@ -170,22 +170,26 @@ class ArticulatedDuel(Duel):
         dmg = ART_MOVES[me.move][4]
         return part, mul, blocked, me.move, dmg
 
-    def _apply_limb_hit(self, me, opp, opp_idx, part, mul, blocked, move, dmg,
+    def _apply_limb_hit(self, me, opp, me_idx, part, mul, blocked, move, dmg,
                         rewards):
+        # ``_combat`` hands us the *attacker's* index (unlike the base duel,
+        # which passes the victim's), so counters and the event log must use it
+        # directly.  Crediting ``1 - me_idx`` here made every hit look like it
+        # was landed by the fighter who took it.
         me.landed = True
         block_mul = me.block_mul() if blocked else 1.0
         want = dmg * mul * block_mul * me.power_buff * opp.armor_buff
         hp_before = opp.hp
         opp.hp = max(0.0, opp.hp - want)
         real = hp_before - opp.hp
-        self.damage_dealt[1 - opp_idx] += real
+        self.damage_dealt[me_idx] += real
 
         self.part_hits["guard" if blocked else part] += 1
         self.events.append((self.frames, move, real, blocked,
-                            1 - opp_idx, abs(opp.x - me.x), part))
+                            me_idx, abs(opp.x - me.x), part))
 
-        rewards[1 - opp_idx] -= real * 0.5
-        rewards[opp_idx] += real * 0.8
+        rewards[1 - me_idx] -= real * 0.5
+        rewards[me_idx] += real * 0.8
 
         if not blocked:
             if part == "head":
