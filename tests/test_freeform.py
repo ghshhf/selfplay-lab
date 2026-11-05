@@ -20,8 +20,11 @@ if str(ROOT) not in sys.path:
 from domains.duel import limbs
 from domains.duel.duel import (S_IDLE, S_ATTACK, S_BLOCK, S_DUCK, S_JUMP,
                               FWD, BACK, PUNCH, KICK, BLOCK, IDLE)
-from domains.duel.freeform import (FreeformDuel, JUMP, DUCK, N_ACTIONS,
-                                   OBS_DIM, TECH, AIR_HEIGHT, JUMP_V, GRAVITY)
+from domains.duel.freeform import (FreeformDuel, JUMP, DUCK, SUB, S_SUB,
+                                   N_ACTIONS, OBS_DIM, TECH, AIR_HEIGHT,
+                                   JUMP_V, GRAVITY, CHAKRA_MAX, CHAKRA_REGEN,
+                                   SUB_COST, SUB_DIST, SUB_COOLDOWN,
+                                   ACTION_NAMES)
 
 
 def freeze(dist=0.9):
@@ -58,8 +61,9 @@ class TestDimensions(unittest.TestCase):
         o0, o1 = env.reset(1)
         self.assertEqual(len(o0), OBS_DIM)
         self.assertEqual(len(o1), OBS_DIM)
-        self.assertEqual(OBS_DIM, 29)
-        self.assertEqual(N_ACTIONS, 8)
+        self.assertEqual(OBS_DIM, 33)
+        self.assertEqual(N_ACTIONS, 9)
+        self.assertEqual(len(ACTION_NAMES), 9)
         self.assertIn(limbs.LOW_KICK, TECH)
         self.assertIn(limbs.FLYING, TECH)
 
@@ -248,6 +252,71 @@ class PlayModeTest(unittest.TestCase):
         self.assertIn("O", text)
         self.assertIn("#", text)
         self.assertGreaterEqual(len(text.splitlines()), 8)
+
+
+class TestSubstitution(unittest.TestCase):
+    def test_swap_lands_behind_and_spends_chakra(self):
+        env = freeze(1.6)
+        env.p0.chakra = CHAKRA_MAX
+        idle(env, 1, a0=SUB)
+        self.assertEqual(env.p0.state, S_SUB)
+        self.assertAlmostEqual(env.p0.chakra, CHAKRA_MAX - SUB_COST, delta=1.0)
+        idle(env, 6)
+        self.assertGreater(env.p0.x, env.p1.x)      # reappeared behind
+        self.assertAlmostEqual(abs(env.p0.x - env.p1.x), SUB_DIST, delta=0.05)
+        self.assertEqual(env.subs, 1)
+        self.assertGreater(env.p0.sub_cd, 0)
+
+    def test_refuses_without_chakra(self):
+        env = freeze(1.6)
+        env.p0.chakra = SUB_COST - 5.0
+        idle(env, 1, a0=SUB)
+        self.assertNotEqual(env.p0.state, S_SUB)
+        self.assertLess(env.p0.chakra, SUB_COST)
+
+    def test_cooldown_blocks_a_second_swap(self):
+        env = freeze(1.6)
+        idle(env, 1, a0=SUB)
+        idle(env, 12)                                # finish the animation
+        env.p0.chakra = CHAKRA_MAX
+        x_before = env.p0.x
+        idle(env, 1, a0=SUB)
+        self.assertNotEqual(env.p0.state, S_SUB)
+        self.assertAlmostEqual(env.p0.x, x_before, delta=1e-6)
+        self.assertEqual(env.subs, 1)
+        self.assertLess(env.p0.sub_cd, SUB_COOLDOWN)
+
+    def test_startup_frames_make_the_attack_whiff(self):
+        env = freeze(0.9)
+        idle(env, 1, a0=PUNCH)                       # jab windup is 4 frames
+        hp = env.p1.hp
+        idle(env, 2, a1=SUB)                         # vanish just before impact
+        idle(env, 14)                                # through the landing
+        self.assertEqual(env.p1.hp, hp)              # no damage went through
+        self.assertGreaterEqual(env.sub_avoided, 1)
+        self.assertEqual(env.p1.state, S_IDLE)
+
+    def test_attack_cannot_be_cancelled_into_substitution(self):
+        env = freeze(1.6)
+        env.p0.chakra = CHAKRA_MAX
+        idle(env, 1, a0=PUNCH)
+        idle(env, 1, a0=SUB)                         # mid-attack, must be ignored
+        self.assertEqual(env.p0.state, S_ATTACK)
+        self.assertAlmostEqual(env.p0.chakra, CHAKRA_MAX, delta=1.0)
+
+    def test_chakra_regenerates(self):
+        env = freeze(1.6)
+        env.p0.chakra = 0.0
+        idle(env, 10)
+        self.assertAlmostEqual(env.p0.chakra, 10 * CHAKRA_REGEN, delta=0.2)
+
+    def test_landing_a_hit_pays_chakra(self):
+        env = freeze(0.9)
+        env.p0.chakra = 10.0
+        before = env.p0.chakra
+        idle(env, 1, a0=PUNCH)
+        idle(env, 8)
+        self.assertGreater(env.p0.chakra, before + CHAKRA_REGEN * 8)
 
 
 if __name__ == "__main__":

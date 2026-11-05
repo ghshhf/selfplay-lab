@@ -15,7 +15,8 @@ Keys (interactive)
     d / fwd      walk forward          j    punch
     a / back     walk backward         k    kick (auto: high / low / flying)
     s            duck                  l    block (12 frames)
-    space        jump                  q    quit
+    space        jump                  e    substitution (40 chakra, 72f cd)
+    q            quit
 
 The point of ``--auto`` is not to fake a scoreboard: the human policy only
 sees the same 29-dim observation the network gets, re-plans every
@@ -67,8 +68,14 @@ class NeuralOpponent:
         state = json.loads((ckpt / "state.json").read_text(encoding="utf-8"))
         arrays = np.load(ckpt / "state.npz")
         meta = np.asarray(arrays["agent__meta"]).tolist()
-        hidden = int(meta[2])
-        self.agent = PPOAgent(F.OBS_DIM, F.N_ACTIONS, hidden=hidden,
+        obs_dim, n_actions, hidden = int(meta[0]), int(meta[1]), int(meta[2])
+        if (obs_dim, n_actions) != (F.OBS_DIM, F.N_ACTIONS):
+            raise SystemExit(
+                "checkpoint expects %d obs / %d actions, this build is %d / %d; "
+                "retrain it with: python domains/neuro/train.py --env freeform "
+                "--out-dir %s" % (obs_dim, n_actions, F.OBS_DIM,
+                                  F.N_ACTIONS, ckpt))
+        self.agent = PPOAgent(obs_dim, n_actions, hidden=hidden,
                               cfg=PPOConfig(), seed=seed)
         self.agent.load_state_dict({k: arrays[k] for k in arrays.files}, "agent")
         self.rng = np.random.default_rng(seed)
@@ -233,6 +240,10 @@ def render(env, last: str, agent_label: str) -> str:
         fill = int(round(max(0.0, hp) / MAX_HP * n))
         return "█" * fill + "·" * (n - fill)
 
+    def chakra(f, n=10):
+        fill = int(round(max(0.0, getattr(f, "chakra", 0.0)) / 100.0 * n))
+        return "◆" * fill + "◇" * (n - fill)
+
     grid = [[" "] * width for _ in range(height)]
     # ground line
     for x in range(width):
@@ -249,21 +260,22 @@ def render(env, last: str, agent_label: str) -> str:
         grid[max(0, min(height - 2, gy))][max(0, min(width - 1, gx))] = char
 
     out = []
-    out.append("  你 PLAYER  HP %5.1f [%s]" % (p0.hp, bar(p0.hp)))
-    out.append("  VS %-14s HP %5.1f [%s]" % (agent_label[:14], p1.hp, bar(p1.hp)))
+    out.append("  你 PLAYER  HP %5.1f [%s] 查克拉 %s" % (p0.hp, bar(p0.hp), chakra(p0)))
+    out.append("  VS %-14s HP %5.1f [%s] 查克拉 %s"
+               % (agent_label[:14], p1.hp, bar(p1.hp), chakra(p1)))
     out.append("  t=%5.2fs  x=%+.2f/%+.2f  y=%.2f/%.2f  %s"
                % (env.frames / 60.0, p0.x, p1.x, p0.y, p1.y, last))
     out.append("  ┌" + " " * width + "┐")
     for row in grid:
         out.append("  │" + "".join(row) + "│")
     out.append("  └" + " " * width + "┘")
-    out.append("  d/fwd  a/back  j 直拳  k 踢  s 下蹲  space 跳  l 格挡  q 退出")
+    out.append("  d/fwd  a/back  j 直拳  k 踢  s 下蹲  space 跳  l 格挡  e 替身  q 退出")
     return "\n".join(out)
 
 
 KEYMAP = {
     "d": FWD, "j": PUNCH, "k": KICK, "s": DUCK, "l": BLOCK,
-    " ": JUMP, "a": BACK, "f": FWD,
+    " ": JUMP, "a": BACK, "f": FWD, "e": F.SUB,
 }
 
 

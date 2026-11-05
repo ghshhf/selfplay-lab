@@ -24,9 +24,14 @@ table -- it falls out of the capsules:
     low kick beats block
     jump beats low kick
 
-Six actions -> nine, 23 observations -> 29 (height and vertical speed for both
-fighters plus two duck flags).  No scripting of *when* to use them; the policy
-has to find that itself.
+**SUB** (action 8) is a substitution (kawarimi): 4 frames of invisibility,
+then a teleport to 0.9 m behind the opponent, for 40 of 100 chakra and a
+72-frame cooldown.  Chakra regenerates slowly and is also earned by landing
+hits, so the escape competes with the rest of the kit instead of being free.
+
+Eight actions -> nine, 23 observations -> 33 (height and vertical speed for
+both fighters, two duck flags, chakra and substitution cooldown for both).
+No scripting of *when* to use them; the policy has to find that itself.
 """
 
 from __future__ import annotations
@@ -53,10 +58,22 @@ except ImportError:  # script import
     from articulated import ArticulatedDuel, HIGH_KICK_SWITCH
     import limbs
 
-JUMP, DUCK = 6, 7
-N_ACTIONS = 8
+JUMP, DUCK, SUB = 6, 7, 8
+N_ACTIONS = 9
 ACTION_NAMES = ("FWD", "BACK", "PUNCH", "KICK", "BLOCK", "IDLE",
-                "JUMP", "DUCK")
+                "JUMP", "DUCK", "SUB")
+S_SUB = 8
+
+CHAKRA_MAX = 100.0
+CHAKRA_REGEN = 0.6        # per frame -> full bar in ~2.8 s
+CHAKRA_HIT_GAIN = 12.0    # attacker earns chakra by landing
+CHAKRA_BLOCK_GAIN = 4.0   # defender earns a little by guarding
+SUB_COST = 40.0
+SUB_STARTUP = 4           # invulnerable frames before the swap
+SUB_RECOVER = 6           # punishable frames after landing behind
+SUB_COOLDOWN = 72
+SUB_DIST = 0.9            # metres behind the opponent
+SUB_TOTAL = SUB_STARTUP + SUB_RECOVER
 
 GRAVITY = 9.8
 JUMP_V = 2.55          # m/s -> apex 0.33 m, ~31 frames airborne
@@ -72,7 +89,7 @@ TECH = {
     limbs.FLYING: limbs.ART_MOVES[limbs.FLYING],
 }
 
-OBS_DIM = 29   # 23 articulated dims + own/opp height, vertical speed, duck flags
+OBS_DIM = 33   # 29 + chakra / substitution cooldown for both fighters
 
 
 class FreeformDuel(ArticulatedDuel):
@@ -81,7 +98,14 @@ class FreeformDuel(ArticulatedDuel):
         self.low_hits = 0
         self.flying_hits = 0
         self.air_frames = 0
-        return super().reset(seed)
+        self.subs = 0
+        self.sub_avoided = 0
+        obs = super().reset(seed)
+        for f in (self.p0, self.p1):
+            f.chakra = CHAKRA_MAX
+            f.sub_cd = 0
+            f.invuln = 0
+        return self._obs()
 
     # ------------------------------------------------------------------- pose
     def _build_pose(self, f):
@@ -99,7 +123,10 @@ class FreeformDuel(ArticulatedDuel):
         if not me.alive:
             return
         me.facing = 1 if opp.x >= me.x else -1
-        if me.state in (S_ATTACK, S_HURT):
+        if act == SUB:
+            self._try_substitution(me, opp)
+            return
+        if me.state in (S_ATTACK, S_HURT, S_SUB):
             return
 
         if act == JUMP:
@@ -148,18 +175,49 @@ class FreeformDuel(ArticulatedDuel):
 
         super()._apply_action(me, opp, act, idx, rewards)
 
+    # ------------------------------------------------------------- substitution
+    def _try_substitution(self, me, opp):
+        """Spend chakra to vanish and reappear behind the opponent.
+
+        Allowed from idle, walk, block, duck, jump and *hit-stun* -- never
+        mid-attack, so an unsafe swing cannot be cancelled for free.
+        """
+        if me.state in (S_ATTACK, S_KO, S_SUB):
+            return
+        if me.sub_cd > 0 or me.chakra < SUB_COST:
+            return
+        me.chakra -= SUB_COST
+        me.sub_cd = SUB_COOLDOWN
+        me.state, me.phase, me.timer = S_SUB, "vanish", SUB_STARTUP
+        me.invuln = SUB_STARTUP + 2
+        me.move = None
+        me.landed = False
+        me.vx = 0.0
+
+    def _swap_behind(self, f, opp):
+        facing = 1 if opp.x >= f.x else -1
+        new_x = float(np.clip(opp.x + facing * SUB_DIST, -self.half, self.half))
+        f.x = new_x
+        f.vx = 0.0
+        f.facing = 1 if opp.x >= f.x else -1
+        self.subs += 1
+
     # -------------------------------------------------------------- observation
     def _fighter_obs(self, me, other):
         base = super()._fighter_obs(me, other)
-        # The base obs normalises state by 5; with DUCK/JUMP (6/7) that leaves
-        # the [0, 1] band, so rescale to 6 here.
-        base[3] = me.state / 6.0
-        base[9] = other.state / 6.0
+        # The base obs normalises state by 5; with DUCK/JUMP/SUB (6/7/8) that
+        # leaves the [0, 1] band, so rescale to 8 here.
+        base[3] = me.state / 8.0
+        base[9] = other.state / 8.0
         extra = np.array([
             me.y / 2.0, me.vy / 4.0,
             other.y / 2.0, other.vy / 4.0,
             1.0 if me.state == S_DUCK else 0.0,
             1.0 if other.state == S_DUCK else 0.0,
+            getattr(me, "chakra", CHAKRA_MAX) / CHAKRA_MAX,
+            getattr(other, "chakra", CHAKRA_MAX) / CHAKRA_MAX,
+            getattr(me, "sub_cd", 0) / SUB_COOLDOWN,
+            getattr(other, "sub_cd", 0) / SUB_COOLDOWN,
         ], dtype=np.float32)
         return np.concatenate([base, extra])
 
@@ -178,6 +236,16 @@ class FreeformDuel(ArticulatedDuel):
                         f.state, f.timer = S_IDLE, 1
 
     def _tick(self, f):
+        if f.state == S_SUB:
+            f.timer -= 1
+            if f.timer <= 0:
+                if f.phase == "vanish":
+                    opp = self.p1 if f is self.p0 else self.p0
+                    self._swap_behind(f, opp)
+                    f.phase, f.timer = "land", SUB_RECOVER
+                else:
+                    f.state, f.phase, f.timer = S_IDLE, "", 1
+            return
         if f.state == S_JUMP and f.y > 0.0:
             if f.cooldown > 0:
                 f.cooldown -= 1
@@ -189,6 +257,13 @@ class FreeformDuel(ArticulatedDuel):
     # ------------------------------------------------------------------ combat
     def _hit_info(self, me, opp, seg):
         if not opp.alive or opp.state == S_KO:
+            return None
+        if getattr(opp, "invuln", 0) > 0:
+            # The substitution window: the limb passes through empty air.
+            _part, _mul, clearance = limbs.closest_hurt(self.pose_of(opp), seg)
+            if clearance <= 0.0:
+                self.sub_avoided += 1
+            me.landed = True
             return None
         blocked = self._guard_hit(opp, seg)
         part, mul, clearance = limbs.closest_hurt(self.pose_of(opp), seg)
@@ -205,12 +280,24 @@ class FreeformDuel(ArticulatedDuel):
                 self.flying_hits += 1
         super()._apply_limb_hit(me, opp, opp_idx, part, mul, blocked, move,
                                 dmg, rewards)
+        me.chakra = min(CHAKRA_MAX, me.chakra + CHAKRA_HIT_GAIN)
+        if blocked:
+            opp.chakra = min(CHAKRA_MAX, opp.chakra + CHAKRA_BLOCK_GAIN)
 
     # -------------------------------------------------------------------- info
     def _advance(self, a0, a1):
+        for f in (self.p0, self.p1):
+            if f.alive:
+                f.chakra = min(CHAKRA_MAX, f.chakra + CHAKRA_REGEN)
+                if f.sub_cd > 0:
+                    f.sub_cd -= 1
+                if f.invuln > 0:
+                    f.invuln -= 1
         rewards, done, info = super()._advance(a0, a1)
         info["jumps"] = self.jumps
         info["low_hits"] = self.low_hits
         info["flying_hits"] = self.flying_hits
         info["air_frames"] = self.air_frames
+        info["subs"] = self.subs
+        info["sub_avoided"] = self.sub_avoided
         return rewards, done, info

@@ -22,7 +22,7 @@
 | **duel** | 两个火柴人徒手对打（纯 numpy 物理） | 9 维基因（武器/攻击性/格挡/踢/距离/反应/待机/捡道具/绕陷阱） | 198 | Elo 制 | fit 0.508 → 1.126，Elo 1573，流派「反击×20」 |
 | **sgs** | 三国杀式卡牌单挑 | 4 维基因（攻击性/防守/回血/距离） | 2670 | Lv4（4 维全开） | fit 0.660 —— **零满分，还在爬** |
 | **gomoku** | 五子棋 15×15，对手是 Rapfi（Elo 3073） | 双头网络 48 通道（policy 225 + value 1）+ VCF 搜索 | 300+ 局实测 | 固定强敌 | **0 胜 / 4.9%**，存活 25.5 → **48.2 手** |
-| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞，`--env freeform` 再加竖直轴与跳跃/下蹲 | 15/23/29 维观测 → MLP(64) → 6/8 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
+| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞，`--env freeform` 再加竖直轴、跳跃/下蹲与替身术 | 15/23/33 维观测 → MLP(64) → 6/9 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
 
 > 代数为各域 `evolve.log` / `progress.tsv` 的实时值，截至 2026-10-29 22:10；gomoku 为 2026-10-30 凌晨实测。
 > 前三个域当时都在后台跑，数字会继续长。
@@ -144,13 +144,17 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 
 #### 自由二维（`--env freeform`）
 
-`domains/duel/freeform.py` 在肢体版上加了竖直轴，动作从 6 个扩到 8 个：
+`domains/duel/freeform.py` 在肢体版上加了竖直轴，动作从 6 个扩到 9 个：
 
 - 新增 **JUMP**（动作 6）：重力 9.8 m/s²，起跳 2.55 m/s，最高约 0.33 m、滞空约 31 帧
 - 新增 **DUCK**（动作 7）：头降到 1.19 m，直拳（1.64 m）和头踢（1.70 m）会从头顶掠过；前踢在髋高仍能命中
 - **下蹲中踢** → 低扫（脚心 ~0.46 m）：低于所有护体胶囊，**格挡挡不住**，但只能打到腿（0.75x）
 - **空中踢** → 飞踢：脚心升到下巴高度，9 帧起手、9 伤害（头 12.2）
-- 观测 23 → 29 维（双方离地高度/竖直速度 + 两个下蹲标记）
+- 新增 **SUB**（动作 8，替身术）：4 帧无敌 → 瞬移到对手身后 0.9 m，消耗 40 查克拉、冷却 72 帧
+- 观测 23 → 33 维（离地高度/竖直速度、两个下蹲标记、双方查克拉与替身冷却）
+
+查克拉是一条独立资源：上限 100、每帧回 0.6（约 2.8 秒回满），命中 +12、格挡成功 +4。
+所以替身不是免费翻滚，而是和进攻抢资源；被打进硬直时按 SUB 也能脱身，但落地有 6 帧硬直可被反打。
 
 四条规则不是写死的克制表，而是胶囊几何自然长出来的：
 
@@ -159,9 +163,10 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 | 下蹲 | 直拳、头踢 | 前踢（打躯干） |
 | 低扫 | 格挡 | 跳（腾空后腿抬高） |
 | 飞踢 | — | 起手慢，落地即空窗 |
+| 替身 | 慢招（头踢 12 帧起手） | 40 查克拉 + 72 帧冷却，落地 6 帧可被反打 |
 
-`metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `act_hist`（策略实际按键分布），
-用来区分"新动作可用"和"策略真的在用"。实测见 FINDINGS 第十一节。
+`metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `subs` / `sub_avoided` / `act_hist`（策略实际按键分布），
+用来区分"新动作可用"和"策略真的在用"。实测见 FINDINGS 第十一、十四节。
 
 #### 自己上手打（`domains/duel/play.py`）
 
@@ -177,9 +182,9 @@ python domains/duel/play.py --auto --rounds 8 --reaction 12 \
 ```
 
 按键：`d` 前进、`a` 后退、`j` 直拳、`k` 踢（引擎按距离/姿态自动选前踢、头踢、低扫、飞踢）、
-`s` 下蹲、`空格` 跳、`l` 格挡、`q` 退出。界面是终端字符画：两条血条 + 俯视 12 行场地。
+`s` 下蹲、`空格` 跳、`l` 格挡、`e` 替身术（40 查克拉）、`q` 退出。界面是终端字符画：两条血条 + 查克拉条 + 俯视 12 行场地。
 
-`--auto` 不是"假 AI 陪你演戏"：它只读网络同样那 29 维观测，每 `--reaction` 帧（默认 12 ≈ 200 ms）
+`--auto` 不是"假 AI 陪你演戏"：它只读网络同样那 33 维观测，每 `--reaction` 帧（默认 12 ≈ 200 ms）
 才重新决策一次，不会读取引擎里的 `me.move`；判断对方踢腿只看脚的离地高度，屏幕上你也能看到。
 
 实测（10 局，`--style pressure`）：反应 12 帧时对 random 0/10、脚本 4/10、神经 0/10；
@@ -296,9 +301,13 @@ python domains/neuro/train.py --no-curriculum --out-dir runs/neuro_flat
 python domains/neuro/train.py --env articulated --bc-episodes 12 --bc-epochs 120 \
     --iterations 6 --episodes 6 --out-dir runs/neuro_art
 
-# 自由二维版本（29 维观测 / 8 动作；想看到跳跃下蹲被用起来，把熵系数调高）
-python domains/neuro/train.py --env freeform --entropy-coef 0.06 \
+# 自由二维版本（33 维观测 / 9 动作，含替身术；熵系数调高才看得到新动作被用）
+python domains/neuro/train.py --env freeform --entropy-coef 0.05 \
     --iterations 8 --episodes 6 --out-dir runs/neuro_free
+
+# 再用 8 维隐空间世界模型做预测（33 -> 8 -> 预测 -> 重建）
+python domains/neuro/train.py --env freeform --latent-world --latent-dim 8 \
+    --entropy-coef 0.05 --iterations 8 --episodes 6 --out-dir runs/neuro_latent
 
 # 调整升级耐心 / 世界模型门控阈值
 python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015 \
@@ -308,7 +317,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 61 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维、玩家模式、算力账本
+python -m unittest discover -s tests -v   # 73 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、算力账本
 ```
 
 ---

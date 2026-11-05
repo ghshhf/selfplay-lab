@@ -38,6 +38,7 @@ from selfplay.core.manifest import RunManifest, make_run_id  # noqa: E402
 from selfplay.core.recorder import RunRecorder  # noqa: E402
 from selfplay.nn.ppo import (Episode, PPOAgent, PPOConfig, Step,  # noqa: E402
                              log_softmax)
+from selfplay.nn.latent import LatentWorldModel  # noqa: E402
 from selfplay.nn.world_model import WorldModel  # noqa: E402
 
 try:
@@ -92,9 +93,16 @@ class NeuroTrainer:
                               cfg=self.ppo_cfg, seed=args.seed)
         self.world_model = None
         if args.world_model:
-            self.world_model = WorldModel(self.obs_dim, self.n_actions,
-                                          hidden=args.hidden,
-                                          lr=args.world_lr, seed=args.seed + 1)
+            if getattr(args, "latent_world", False):
+                self.world_model = LatentWorldModel(
+                    self.obs_dim, self.n_actions, hidden=args.hidden,
+                    latent=args.latent_dim, lr=args.world_lr,
+                    seed=args.seed + 1)
+            else:
+                self.world_model = WorldModel(self.obs_dim, self.n_actions,
+                                              hidden=args.hidden,
+                                              lr=args.world_lr,
+                                              seed=args.seed + 1)
 
         self.league: list[PPOAgent] = []
         self.history: list[float] = []
@@ -103,6 +111,7 @@ class NeuroTrainer:
         self.world_mse_history: list[float] = []
         self.best_holdout = -1.0
         self.bc_loss = None
+        self.recon_mse = None
         self.run_id = ""
         self.ledger = ComputeLedger()
         self._last_eval = None
@@ -351,6 +360,8 @@ class NeuroTrainer:
             "jumps": int(info.get("jumps", 0)),
             "low_hits": int(info.get("low_hits", 0)),
             "flying_hits": int(info.get("flying_hits", 0)),
+            "subs": int(info.get("subs", 0)),
+            "sub_avoided": int(info.get("sub_avoided", 0)),
         }
 
     def _collect(self, n: int, iteration: int):
@@ -363,6 +374,8 @@ class NeuroTrainer:
         jumps = []
         lows = []
         flyings = []
+        subs = []
+        avoided = []
         for k in range(n):
             opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
@@ -377,6 +390,8 @@ class NeuroTrainer:
             jumps.append(stat["jumps"])
             lows.append(stat["low_hits"])
             flyings.append(stat["flying_hits"])
+            subs.append(stat["subs"])
+            avoided.append(stat["sub_avoided"])
 
         # What the policy actually presses.  This is the only direct evidence
         # that the new degrees of freedom are being used rather than ignored.
@@ -399,6 +414,8 @@ class NeuroTrainer:
             "jumps": float(np.mean(jumps)) if jumps else 0.0,
             "low_hits": float(np.mean(lows)) if lows else 0.0,
             "flying_hits": float(np.mean(flyings)) if flyings else 0.0,
+            "subs": float(np.mean(subs)) if subs else 0.0,
+            "sub_avoided": float(np.mean(avoided)) if avoided else 0.0,
             "steps": int(sum(len(ep.steps) for ep in episodes)),
             "act_hist": hist,
         }
@@ -410,6 +427,7 @@ class NeuroTrainer:
         frames = []
         clashes = []
         heads = []
+        subs = []
         eval_rng = np.random.default_rng(0)
         for seed in range(2000, 2000 + n):
             for side in (0, 1):
@@ -441,16 +459,25 @@ class NeuroTrainer:
                 frames.append(arena.frames)
                 clashes.append(int(info.get("clashes", 0)))
                 heads.append(int(info.get("head_hits", 0)))
+                subs.append(int(info.get("subs", 0)))
         return {
             "win": float(np.mean(outcomes)) if outcomes else 0.0,
             "frames": float(np.mean(frames)) if frames else 0.0,
             "clashes": float(np.mean(clashes)) if clashes else 0.0,
             "head_hits": float(np.mean(heads)) if heads else 0.0,
+            "subs": float(np.mean(subs)) if subs else 0.0,
             "games": len(outcomes),
         }
 
     # --------------------------------------------------------------- training
     def _world_model_step(self, episodes):
+        """Return the model's prediction error in its own space.
+
+        The plain model reports observation MSE; the latent model reports
+        latent MSE plus the reconstruction error, so the two numbers can be
+        compared across 1-D / 2-D / 3-D arenas even though observation sizes
+        differ.
+        """
         if self.world_model is None:
             return None
         obs, actions, next_obs = [], [], []
@@ -464,10 +491,15 @@ class NeuroTrainer:
                 next_obs.append(nxt)
         if not obs:
             return None
-        return self.world_model.train(
+        out = self.world_model.train(
             np.stack(obs), np.asarray(actions, dtype=np.int64), np.stack(next_obs),
             self.rng, epochs=self.args.world_epochs,
         )
+        if isinstance(out, dict):
+            self.recon_mse = float(out.get("recon_mse", 0.0))
+            return float(out.get("latent_mse", 0.0))
+        self.recon_mse = None
+        return out
 
     def _entropy(self, episodes):
         obs = []
@@ -550,6 +582,13 @@ class NeuroTrainer:
             "random_win": round(float(random_eval["win"]), 4),
             "entropy": round(float(entropy), 4),
             "world_mse": None if world_mse is None else round(float(world_mse), 5),
+            "recon_mse": None if self.recon_mse is None else round(self.recon_mse, 5),
+            "world_latent": (self.world_model.latent_dim
+                             if isinstance(self.world_model, LatentWorldModel)
+                             else None),
+            "subs": round(float(stats.get("subs", 0.0)), 2),
+            "eval_subs": round(float(holdout.get("subs", 0.0)), 2),
+            "sub_avoided": round(float(stats.get("sub_avoided", 0.0)), 2),
             "policy_loss": round(float(ppo["policy_loss"]), 5),
             "value_loss": round(float(ppo["value_loss"]), 5),
             "approx_kl": round(float(ppo["approx_kl"]), 5),
@@ -590,7 +629,8 @@ def build_argparser():
     ap.add_argument("--env", choices=("duel", "articulated", "freeform"),
                     default="duel",
                     help="duel: 1-D reach check; articulated: limb-capsule "
-                         "contact; freeform: articulated + jump/duck (8 actions)")
+                         "contact; freeform: articulated + jump/duck/substitution "
+                         "(9 actions)")
     ap.add_argument("--iterations", type=int, default=10)
     ap.add_argument("--episodes", type=int, default=4)
     ap.add_argument("--max-frames", type=int, default=600)
@@ -612,6 +652,10 @@ def build_argparser():
     ap.add_argument("--no-world-model", dest="world_model", action="store_false")
     ap.add_argument("--world-lr", type=float, default=1e-3)
     ap.add_argument("--world-epochs", type=int, default=2)
+    ap.add_argument("--latent-world", action="store_true",
+                    help="compress observations through an 8-D bottleneck and "
+                         "predict in latent space instead of raw observation space")
+    ap.add_argument("--latent-dim", type=int, default=8)
     ap.add_argument("--snapshot-every", type=int, default=2)
     ap.add_argument("--league-size", type=int, default=6)
     ap.add_argument("--warmup", type=int, default=3)
