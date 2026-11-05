@@ -25,6 +25,7 @@ from selfplay.core.stats import (bootstrap_ci, paired_delta,  # noqa: E402
 from selfplay.nn.latent import LatentWorldModel  # noqa: E402
 from selfplay.nn.pbt import PBTPopulation, clone_agent, perturb_params  # noqa: E402
 from selfplay.nn.ppo import PPOAgent, PPOConfig  # noqa: E402
+from selfplay.nn.rnd import RND  # noqa: E402
 
 
 def _agent(obs_dim=6, n_actions=3, hidden=8, seed=0):
@@ -174,6 +175,35 @@ class TestLatentRollout(unittest.TestCase):
         self.assertEqual(out.shape, (23,))
 
 
+class TestRND(unittest.TestCase):
+    def test_novelty_decays_for_a_repeated_state(self):
+        rnd = RND(6, hidden=8, out_dim=4, lr=1e-2, seed=0)
+        obs = np.linspace(-1, 1, 6).astype(np.float32)
+        first = rnd.error(obs)
+        for _ in range(60):
+            rnd.update(obs)
+        self.assertLess(rnd.error(obs), first * 0.5)
+
+    def test_target_network_is_frozen(self):
+        rnd = RND(6, hidden=8, out_dim=4, lr=1e-2, seed=0)
+        obs = np.ones(6, dtype=np.float32)
+        before = [p.copy() for layer in rnd.target.params for p in layer]
+        for _ in range(10):
+            rnd.update(obs)
+        for a, b in zip(before, [p for layer in rnd.target.params for p in layer]):
+            self.assertTrue(np.allclose(a, b))
+
+    def test_state_dict_roundtrip(self):
+        rnd = RND(6, hidden=8, out_dim=4, lr=1e-2, seed=0)
+        obs = np.linspace(-1, 1, 6).astype(np.float32)
+        for _ in range(20):
+            rnd.update(obs)
+        score = rnd.error(obs)
+        clone = RND(6, hidden=8, out_dim=4, lr=1e-2, seed=1)
+        clone.load_state_dict(rnd.state_dict(), "rnd")
+        self.assertAlmostEqual(clone.error(obs), score, places=5)
+
+
 class TestTrainerIntegration(unittest.TestCase):
     def _run(self, extra):
         import train as T
@@ -211,6 +241,24 @@ class TestTrainerIntegration(unittest.TestCase):
                                   "--pbt-games", "2"])
         self.assertIn("pbt_best", rec)
         self.assertEqual(len(trainer.pbt.members), 3)
+
+    def test_continuous_margin_is_recorded(self):
+        rec, _ = self._run([])
+        self.assertGreaterEqual(rec["holdout_margin"], -1.0)
+        self.assertLessEqual(rec["holdout_margin"], 1.0)
+        self.assertLessEqual(rec["holdout_margin_ci_low"], rec["holdout_margin"])
+        self.assertGreaterEqual(rec["holdout_margin_ci_high"], rec["holdout_margin"])
+
+    def test_rnd_curiosity_runs(self):
+        rec, trainer = self._run(["--latent-policy", "--surprise-coef", "0.5",
+                                  "--surprise-mode", "rnd"])
+        self.assertIsNotNone(trainer.rnd)
+        self.assertGreaterEqual(rec["surprise"], 0.0)
+
+    def test_pbt_can_select_on_margin(self):
+        rec, _ = self._run(["--pbt", "--pbt-every", "1", "--pbt-size", "3",
+                            "--pbt-games", "2", "--fitness", "margin"])
+        self.assertIn("pbt_best", rec)
 
 
 class TestABTool(unittest.TestCase):

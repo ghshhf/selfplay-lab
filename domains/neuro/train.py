@@ -43,6 +43,7 @@ from selfplay.nn.latent import LatentWorldModel  # noqa: E402
 from selfplay.nn.llmstack import (EMA, EntropySchedule, LRSchedule,  # noqa: E402
                                   RejectionBuffer, mirror_batch)
 from selfplay.nn.pbt import PBTPopulation, clone_agent  # noqa: E402
+from selfplay.nn.rnd import RND  # noqa: E402
 from selfplay.nn.world_model import WorldModel  # noqa: E402
 
 try:
@@ -164,6 +165,13 @@ class NeuroTrainer:
                                               lr=args.world_lr,
                                               seed=args.seed + 1)
 
+        # Curiosity has two possible sources.  RND does not need the world
+        # model at all, so it is independent of `--world-model`.
+        self.rnd = None
+        if args.surprise_mode == "rnd" and args.surprise_coef > 0:
+            self.rnd = RND(self.obs_dim, hidden=args.hidden,
+                           seed=args.seed + 2)
+
         self.league: list[PPOAgent] = []
         self.history: list[float] = []
         self.holdout_history: list[float] = []
@@ -174,6 +182,7 @@ class NeuroTrainer:
         self.recon_mse = None
         self.encoder_metrics = None
         self._surprise_ema = 1e-3
+        self._rnd_ema = 1e-3
         self._surprise_sum = 0.0
         self.run_id = ""
         self.ledger = ComputeLedger()
@@ -299,6 +308,8 @@ class NeuroTrainer:
             arrays.update(self.world_model.state_dict("world"))
         if self.ema is not None:
             arrays.update(self.ema.state_dict("ema"))
+        if self.rnd is not None:
+            arrays.update(self.rnd.state_dict("rnd"))
         for i, snap in enumerate(self.league):
             arrays.update(snap.state_dict("league%d" % i))
         return arrays
@@ -352,6 +363,8 @@ class NeuroTrainer:
         if self.ema is not None and "ema__updates" in arrays:
             self.ema.load_state_dict(arrays, "ema")
             self.ema.copy_to([self.ema_agent.policy, self.ema_agent.value])
+        if self.rnd is not None and "rnd__meta" in arrays:
+            self.rnd.load_state_dict(arrays, "rnd")
         self.rft_loss = state.get("rft_loss")
 
         self.league = []
@@ -555,19 +568,34 @@ class NeuroTrainer:
 
     # --------------------------------------------------------------- episodes
     def _surprise(self, obs, action, next_obs) -> float:
-        """Curiosity bonus: prediction error of the latent world model.
+        """Curiosity bonus, normalised by its own running mean.
 
-        Only *above-average* error is rewarded (``ratio - 1``), otherwise the
-        agent can farm a constant offset by standing still.  The bonus is
-        normalised by a running mean so it does not depend on the absolute
-        scale of the model's loss.
+        Two sources, and the difference is the whole point:
+
+        * ``wm`` -- latent world-model prediction error.  Rewards transitions
+          the model finds *discontinuous*; a substitution (teleport) maximises
+          it, so ``wm`` curiosity teaches the agent to teleport, not to win.
+        * ``rnd`` -- predictor error against a frozen random target network.
+          Rewards *unfamiliar states*.  Being one frame later does not count as
+          novel, so teleportation gets no free bonus.
+
+        In both cases only the above-average part (``ratio - 1``) is paid, so a
+        constant offset cannot be farmed by standing still.
         """
-        if self.args.surprise_coef <= 0 or not isinstance(
-                self.world_model, LatentWorldModel):
+        if self.args.surprise_coef <= 0:
             return 0.0
-        err = float(self.world_model.error(obs, action, next_obs))
-        self._surprise_ema = 0.995 * self._surprise_ema + 0.005 * err
-        ratio = err / (self._surprise_ema + 1e-6)
+        mode = getattr(self.args, "surprise_mode", "wm")
+        if mode == "rnd" and self.rnd is not None:
+            err = self.rnd.error(obs)
+            self.rnd.update(obs)
+            self._rnd_ema = 0.995 * self._rnd_ema + 0.005 * err
+            ratio = err / (self._rnd_ema + 1e-6)
+        elif mode == "wm" and isinstance(self.world_model, LatentWorldModel):
+            err = float(self.world_model.error(obs, action, next_obs))
+            self._surprise_ema = 0.995 * self._surprise_ema + 0.005 * err
+            ratio = err / (self._surprise_ema + 1e-6)
+        else:
+            return 0.0
         bonus = self.args.surprise_coef * min(max(ratio - 1.0, 0.0), 2.0)
         self._surprise_sum += bonus
         return bonus
@@ -620,8 +648,17 @@ class NeuroTrainer:
             outcome = 1.0
         else:
             outcome = 0.0
+        hp = info.get("hp")
+        if hp is not None and len(hp) == 2:
+            # A continuous signal next to the binary win: how much health was
+            # left.  Near-identical policies can be ranked by this even when
+            # the win rate is saturated at 0 or 1.
+            margin = (float(hp[side]) - float(hp[1 - side])) / 100.0
+        else:
+            margin = 1.0 if outcome == 1.0 else (-1.0 if outcome == 0.0 else 0.0)
         return ep, {
             "outcome": outcome,
+            "margin": margin,
             "frames": arena.frames,
             "return": total_reward,
             "winner": winner,
@@ -637,6 +674,7 @@ class NeuroTrainer:
     def _collect(self, n: int, iteration: int):
         episodes = []
         outcomes = []
+        margins = []
         frames = []
         returns = []
         clashes = []
@@ -655,6 +693,7 @@ class NeuroTrainer:
                 self.pool.record(name, stat["outcome"])
             episodes.append(ep)
             outcomes.append(stat["outcome"])
+            margins.append(stat["margin"])
             frames.append(stat["frames"])
             returns.append(stat["return"])
             clashes.append(stat["clashes"])
@@ -679,6 +718,7 @@ class NeuroTrainer:
 
         return episodes, {
             "win": float(np.mean(outcomes)) if outcomes else 0.0,
+            "margin": float(np.mean(margins)) if margins else 0.0,
             "frames": float(np.mean(frames)) if frames else 0.0,
             "return": float(np.mean(returns)) if returns else 0.0,
             "clashes": float(np.mean(clashes)) if clashes else 0.0,
@@ -698,6 +738,7 @@ class NeuroTrainer:
         # A fixed seed suite, independent of the training RNG, so the same
         # checkpoint is always scored on the same matches.
         outcomes = []
+        margins = []
         frames = []
         clashes = []
         heads = []
@@ -731,15 +772,26 @@ class NeuroTrainer:
                         break
                 w = int(info.get("winner", -1))
                 outcomes.append(0.5 if w < 0 else (1.0 if w == side else 0.0))
+                hp = info.get("hp")
+                if hp is not None and len(hp) == 2:
+                    margins.append((float(hp[side]) - float(hp[1 - side]))
+                                   / 100.0)
+                else:
+                    margins.append(1.0 if w == side else
+                                   (-1.0 if w >= 0 else 0.0))
                 frames.append(arena.frames)
                 clashes.append(int(info.get("clashes", 0)))
                 heads.append(int(info.get("head_hits", 0)))
                 subs.append(int(info.get("subs", 0)))
         summary = summarise(outcomes, seed=0)
+        margin_summary = summarise(margins, seed=0)
         return {
             "win": float(np.mean(outcomes)) if outcomes else 0.0,
             "win_ci_low": summary["ci_low"],
             "win_ci_high": summary["ci_high"],
+            "margin": float(margin_summary["mean"]),
+            "margin_ci_low": margin_summary["ci_low"],
+            "margin_ci_high": margin_summary["ci_high"],
             "frames": float(np.mean(frames)) if frames else 0.0,
             "clashes": float(np.mean(clashes)) if clashes else 0.0,
             "head_hits": float(np.mean(heads)) if heads else 0.0,
@@ -886,11 +938,15 @@ class NeuroTrainer:
     def _pbt_step(self, iteration: int):
         """Score the population, keep winners, mutate survivors."""
         games = max(2, self.args.pbt_games)
-        fitness = lambda m: self._evaluate(games, "holdout", agent=m)["win"]
+        metric = self.args.fitness
+
+        def fitness(m):
+            return self._evaluate(games, "holdout", agent=m)[metric]
+
         champion, report = self.pbt.evolve(fitness)
         report["pbt_adopted"] = False
         if self.args.pbt_adopt:
-            current = self._evaluate(games, "holdout")["win"]
+            current = self._evaluate(games, "holdout")[metric]
             if report["pbt_best"] >= current + 0.02:
                 self.agent.load_state_dict(champion.state_dict(), "agent")
                 report["pbt_adopted"] = True
@@ -907,6 +963,7 @@ class NeuroTrainer:
 
     def train_iteration(self, iteration: int):
         self.ledger.start_iteration()
+        self._surprise_sum = 0.0   # per-iteration bonus, not a running total
         with self.ledger.phase("collect"):
             episodes, stats = self._collect(self.args.episodes, iteration)
         real_episodes = episodes
@@ -994,6 +1051,7 @@ class NeuroTrainer:
             "episodes": self.args.episodes,
             "steps": stats["steps"],
             "train_win": round(float(stats["win"]), 4),
+            "train_margin": round(float(stats["margin"]), 4),
             "train_return": round(float(stats["return"]), 2),
             "avg_frames": round(float(stats["frames"]), 1),
             "clashes": round(float(stats["clashes"]), 2),
@@ -1007,6 +1065,9 @@ class NeuroTrainer:
             "holdout_win": round(float(holdout["win"]), 4),
             "holdout_ci_low": round(float(holdout["win_ci_low"]), 4),
             "holdout_ci_high": round(float(holdout["win_ci_high"]), 4),
+            "holdout_margin": round(float(holdout["margin"]), 4),
+            "holdout_margin_ci_low": round(float(holdout["margin_ci_low"]), 4),
+            "holdout_margin_ci_high": round(float(holdout["margin_ci_high"]), 4),
             "holdout_outcomes": holdout["outcomes"],
             "imagine_steps": int(imagine_n),
             "surprise": round(float(self._surprise_sum), 3),
@@ -1158,8 +1219,16 @@ def build_argparser():
     ap.add_argument("--encoder-epochs", type=int, default=8,
                     help="self-supervised warm-up epochs before freezing encoder")
     ap.add_argument("--surprise-coef", type=float, default=0.0,
-                    help="curiosity bonus from latent prediction error; "
-                         "0 = off, 0.5 is a reasonable value")
+                    help="curiosity bonus coefficient; 0 = off, 0.5 is a "
+                         "reasonable value")
+    ap.add_argument("--surprise-mode", choices=("wm", "rnd", "none"),
+                    default="wm",
+                    help="wm: latent prediction error (rewards teleports); "
+                         "rnd: random-network distillation (rewards unfamiliar "
+                         "states); none: disable")
+    ap.add_argument("--fitness", choices=("win", "margin"), default="win",
+                    help="selection signal for PBT: binary win rate, or the "
+                         "continuous health margin (hp difference / 100)")
     ap.add_argument("--pbt", action="store_true",
                     help="weight-space evolution: population, mutation, selection")
     ap.add_argument("--pbt-size", type=int, default=6)

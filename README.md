@@ -93,6 +93,9 @@ neuro 域不依赖 torch，整套网络是纯 NumPy 手写的，这样它和遗�
 selfplay/nn/mlp.py         MLP + Adam + 手写反向传播 + checkpoint
 selfplay/nn/ppo.py         离散动作 PPO（GAE / clipped surrogate / entropy / value）
 selfplay/nn/world_model.py one-step 世界模型：obs + action → next obs（MSE）
+selfplay/nn/latent.py      隐空间世界模型：33 → z → 预测 → 重建 + 奖励头
+selfplay/nn/rnd.py         RND 好奇心：固定随机目标网络，novelty = 预测误差
+selfplay/nn/pbt.py         权重空间进化：克隆 / 按张量尺度加噪 / 选择 / 变异
 selfplay/core/health.py    评估器健康判据（饱和 / 地板锁 / 缺维 / league overfit / 策略坍缩）
 selfplay/core/manifest.py  每次 run 的 manifest（seed / config / git commit / 平台）
 selfplay/core/recorder.py  metrics.jsonl + progress.tsv + 可 resume 的 state
@@ -369,6 +372,14 @@ python domains/neuro/train.py --env freeform --latent-world \
 python domains/neuro/train.py --env freeform --pbt --pbt-size 4 --pbt-games 8 \
     --pbt-every 3 --pbt-adopt --out-dir runs/neuro_pbt
 
+# 用连续适应度（剩余血量差）而不是二值胜负来驱动 PBT
+python domains/neuro/train.py --env freeform --pbt --fitness margin \
+    --pbt-size 4 --pbt-games 8 --out-dir runs/neuro_pbt_margin
+
+# RND 好奇心：奖励"没见过的状态"，而不是"世界模型没预测到的跳变"
+python domains/neuro/train.py --env freeform --latent-policy --latent-dim 8 \
+    --surprise-coef 0.5 --surprise-mode rnd --out-dir runs/neuro_rnd
+
 # 配对 A/B：同一批评估种子，逐 iteration 比较
 python tools/ab.py --a runs/exp_a --b runs/exp_b --metric holdout_win
 
@@ -384,7 +395,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 128 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练
+python -m unittest discover -s tests -v   # 134 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
 ```
 
 ---
