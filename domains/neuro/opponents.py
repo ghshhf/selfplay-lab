@@ -59,14 +59,15 @@ CURRICULUM_LEVELS = [
 
 
 class RandomOpponent:
-    def __init__(self, seed=0):
+    def __init__(self, seed=0, n_actions=N_ACTIONS):
         self.rng = np.random.default_rng(seed)
+        self.n_actions = int(n_actions)
 
     def reset(self, seed):
         self.rng = np.random.default_rng(seed)
 
     def act(self, me, opp, obs):
-        return int(self.rng.integers(N_ACTIONS))
+        return int(self.rng.integers(self.n_actions))
 
 
 class ScriptedOpponent:

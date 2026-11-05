@@ -40,13 +40,17 @@ from selfplay.nn.ppo import (Episode, PPOAgent, PPOConfig, Step,  # noqa: E402
 from selfplay.nn.world_model import WorldModel  # noqa: E402
 
 try:
-    from .env import (ARTICULATED_OBS_DIM, ArticulatedArena, N_ACTIONS,
+    from .env import (ACTION_NAMES, ARTICULATED_OBS_DIM, ArticulatedArena,
+                      FREEFORM_ACTION_NAMES, FREEFORM_N_ACTIONS,
+                      FREEFORM_OBS_DIM, FreeformArena, N_ACTIONS,
                       NeuralArena, OBS_DIM)  # noqa: E402
     from .opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
                             SCRIPTED_GENES, ScriptedOpponent,
                             SnapshotOpponent, heuristic_action)
 except ImportError:  # running as a script: python domains/neuro/train.py
-    from env import (ARTICULATED_OBS_DIM, ArticulatedArena, N_ACTIONS,
+    from env import (ACTION_NAMES, ARTICULATED_OBS_DIM, ArticulatedArena,
+                     FREEFORM_ACTION_NAMES, FREEFORM_N_ACTIONS,
+                     FREEFORM_OBS_DIM, FreeformArena, N_ACTIONS,
                      NeuralArena, OBS_DIM)  # noqa: E402
     from opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
                            SCRIPTED_GENES, ScriptedOpponent,
@@ -64,10 +68,17 @@ class NeuroTrainer:
         if args.env == "articulated":
             self.arena_cls = ArticulatedArena
             self.obs_dim = ARTICULATED_OBS_DIM
+            self.n_actions = N_ACTIONS
             self.reach_scale = 0.86   # limb geometry is shorter than the 1-D reach
+        elif args.env == "freeform":
+            self.arena_cls = FreeformArena
+            self.obs_dim = FREEFORM_OBS_DIM
+            self.n_actions = FREEFORM_N_ACTIONS
+            self.reach_scale = 0.86
         else:
             self.arena_cls = NeuralArena
             self.obs_dim = OBS_DIM
+            self.n_actions = N_ACTIONS
             self.reach_scale = 1.0
 
         self.ppo_cfg = PPOConfig(
@@ -76,11 +87,11 @@ class NeuroTrainer:
             entropy_coef=args.entropy_coef, value_coef=args.value_coef,
             max_grad_norm=args.max_grad_norm,
         )
-        self.agent = PPOAgent(self.obs_dim, N_ACTIONS, hidden=args.hidden,
+        self.agent = PPOAgent(self.obs_dim, self.n_actions, hidden=args.hidden,
                               cfg=self.ppo_cfg, seed=args.seed)
         self.world_model = None
         if args.world_model:
-            self.world_model = WorldModel(self.obs_dim, N_ACTIONS,
+            self.world_model = WorldModel(self.obs_dim, self.n_actions,
                                           hidden=args.hidden,
                                           lr=args.world_lr, seed=args.seed + 1)
 
@@ -178,7 +189,7 @@ class NeuroTrainer:
         self.league = []
         i = 0
         while ("league%d__meta" % i) in arrays:
-            snap = PPOAgent(self.obs_dim, N_ACTIONS, hidden=self.args.hidden,
+            snap = PPOAgent(self.obs_dim, self.n_actions, hidden=self.args.hidden,
                             cfg=self.ppo_cfg, seed=0)
             snap.load_state_dict(arrays, "league%d" % i)
             self.league.append(snap)
@@ -194,7 +205,7 @@ class NeuroTrainer:
         # to read the opponent's pose instead of the distance, which then
         # collapses against a different scripted style.
         pool = [
-            RandomOpponent(),
+            RandomOpponent(n_actions=self.n_actions),
             ScriptedOpponent(SCRIPTED_GENES[0], reach_scale=self.reach_scale),
             ScriptedOpponent(SCRIPTED_GENES[1], reach_scale=self.reach_scale),
         ]
@@ -229,6 +240,14 @@ class NeuroTrainer:
             return None
         x = np.stack(obs).astype(np.float32)
         y = np.asarray(acts, dtype=np.int64)
+        if self.n_actions > N_ACTIONS:
+            # The scripted expert only knows the original six buttons.  Without
+            # this, JUMP / DUCK / low kicks would start with logits near -inf
+            # and PPO would need hundreds of episodes to try them at all.
+            # Random labels on 10% of states keep them alive without erasing
+            # the walk-in-and-punch prior.
+            noise = self.rng.random(len(y)) < 0.10
+            y[noise] = self.rng.integers(0, self.n_actions, int(noise.sum()))
         onehot_cache = np.eye(self.agent.n_actions, dtype=np.float64)
         epoch_loss = 0.0
         for _epoch in range(self.args.bc_epochs):
@@ -265,7 +284,7 @@ class NeuroTrainer:
 
     def _sample_opponent(self, iteration: int, k: int):
         if iteration < self.args.warmup:
-            return RandomOpponent()
+            return RandomOpponent(n_actions=self.n_actions)
         r = float(self.rng.random())
         if self.league and r < 0.45:
             idx = int(self.rng.integers(len(self.league)))
@@ -274,7 +293,7 @@ class NeuroTrainer:
             pool = self._scripted_pool()
             gene = pool[int(self.rng.integers(len(pool)))]
             return ScriptedOpponent(gene, reach_scale=self.reach_scale)
-        return RandomOpponent()
+        return RandomOpponent(n_actions=self.n_actions)
 
     # --------------------------------------------------------------- episodes
     def _play(self, opponent, seed: int, collect: bool):
@@ -324,6 +343,9 @@ class NeuroTrainer:
             "winner": winner,
             "clashes": int(info.get("clashes", 0)),
             "head_hits": int(info.get("head_hits", 0)),
+            "jumps": int(info.get("jumps", 0)),
+            "low_hits": int(info.get("low_hits", 0)),
+            "flying_hits": int(info.get("flying_hits", 0)),
         }
 
     def _collect(self, n: int, iteration: int):
@@ -333,6 +355,9 @@ class NeuroTrainer:
         returns = []
         clashes = []
         heads = []
+        jumps = []
+        lows = []
+        flyings = []
         for k in range(n):
             opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
@@ -344,13 +369,33 @@ class NeuroTrainer:
             returns.append(stat["return"])
             clashes.append(stat["clashes"])
             heads.append(stat["head_hits"])
+            jumps.append(stat["jumps"])
+            lows.append(stat["low_hits"])
+            flyings.append(stat["flying_hits"])
+
+        # What the policy actually presses.  This is the only direct evidence
+        # that the new degrees of freedom are being used rather than ignored.
+        counts = np.zeros(self.n_actions, dtype=np.int64)
+        for ep in episodes:
+            for step in ep.steps:
+                counts[step.action] += 1
+        names = (FREEFORM_ACTION_NAMES if self.args.env == "freeform"
+                 else ACTION_NAMES)
+        total = int(counts.sum()) or 1
+        hist = {names[i]: round(float(counts[i]) / total, 3)
+                for i in range(min(len(names), self.n_actions))}
+
         return episodes, {
             "win": float(np.mean(outcomes)) if outcomes else 0.0,
             "frames": float(np.mean(frames)) if frames else 0.0,
             "return": float(np.mean(returns)) if returns else 0.0,
             "clashes": float(np.mean(clashes)) if clashes else 0.0,
             "head_hits": float(np.mean(heads)) if heads else 0.0,
+            "jumps": float(np.mean(jumps)) if jumps else 0.0,
+            "low_hits": float(np.mean(lows)) if lows else 0.0,
+            "flying_hits": float(np.mean(flyings)) if flyings else 0.0,
             "steps": int(sum(len(ep.steps) for ep in episodes)),
+            "act_hist": hist,
         }
 
     def _evaluate(self, n: int, kind: str):
@@ -364,7 +409,7 @@ class NeuroTrainer:
         for seed in range(2000, 2000 + n):
             for side in (0, 1):
                 if kind == "random":
-                    opp = RandomOpponent()
+                    opp = RandomOpponent(n_actions=self.n_actions)
                 else:
                     opp = ScriptedOpponent(self._holdout_gene(),
                                           reach_scale=self.reach_scale)
@@ -429,7 +474,7 @@ class NeuroTrainer:
         return float(np.mean([self.agent.entropy_of(o) for o in obs[:128]]))
 
     def _snapshot(self):
-        snap = PPOAgent(self.obs_dim, N_ACTIONS, hidden=self.args.hidden,
+        snap = PPOAgent(self.obs_dim, self.n_actions, hidden=self.args.hidden,
                         cfg=self.ppo_cfg, seed=0)
         snap.load_state_dict(self.agent.state_dict(), "agent")
         self.league.append(snap)
@@ -482,6 +527,10 @@ class NeuroTrainer:
             "eval_clashes": round(float(holdout["clashes"]), 2),
             "head_hits": round(float(stats["head_hits"]), 2),
             "eval_head_hits": round(float(holdout["head_hits"]), 2),
+            "jumps": round(float(stats["jumps"]), 2),
+            "low_hits": round(float(stats["low_hits"]), 2),
+            "flying_hits": round(float(stats["flying_hits"]), 2),
+            "act_hist": stats["act_hist"],
             "holdout_win": round(float(holdout["win"]), 4),
             "holdout_frames": round(float(holdout["frames"]), 1),
             "random_win": round(float(random_eval["win"]), 4),
@@ -517,8 +566,10 @@ class NeuroTrainer:
 
 def build_argparser():
     ap = argparse.ArgumentParser(description="Neural self-play in the duel arena")
-    ap.add_argument("--env", choices=("duel", "articulated"), default="duel",
-                    help="duel: 1-D reach check; articulated: limb-capsule contact")
+    ap.add_argument("--env", choices=("duel", "articulated", "freeform"),
+                    default="duel",
+                    help="duel: 1-D reach check; articulated: limb-capsule "
+                         "contact; freeform: articulated + jump/duck (9 actions)")
     ap.add_argument("--iterations", type=int, default=10)
     ap.add_argument("--episodes", type=int, default=4)
     ap.add_argument("--max-frames", type=int, default=600)

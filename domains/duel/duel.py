@@ -86,7 +86,9 @@ TRAP_REARM = 60            # 触发后重新布防的冷却帧（防同一个人
 
 # 状态编号（写进数据集，别用字符串撑表）
 S_IDLE, S_WALK, S_ATTACK, S_BLOCK, S_HURT, S_KO = range(6)
-STATE_NAMES = ("IDLE", "WALK", "ATTACK", "BLOCK", "HURT", "KO")
+# 只由自由二维环境（freeform.py）使用：下蹲 / 腾空
+S_DUCK, S_JUMP = 6, 7
+STATE_NAMES = ("IDLE", "WALK", "ATTACK", "BLOCK", "HURT", "KO", "DUCK", "JUMP")
 
 
 class Fighter:
@@ -98,6 +100,9 @@ class Fighter:
         self.weapon = weapon
         self.state = S_IDLE
         self.timer = 0                # 当前动作还剩多少帧
+        # 自由二维环境用的竖直轴状态；旧环境永远停在 0
+        self.y = 0.0                  # 离地高度（米，脚底为 0）
+        self.vy = 0.0                 # 竖直速度
         self.move = None              # 正在出的招（PUNCH/KICK）
         self.phase = ""               # windup / active / recover
         self.cooldown = 0
@@ -490,13 +495,17 @@ class Duel:
             self.p0.x = float(np.clip(self.p0.x, -self.half, self.half))
             self.p1.x = float(np.clip(self.p1.x, -self.half, self.half))
 
+    def spec_of(self, f, move):
+        """招式时序表。freeform 会覆写它，把内部招式（低扫/飞踢）也纳入计时。"""
+        return f.attacks()[move]
+
     def _tick(self, f):
         if f.cooldown > 0:
             f.cooldown -= 1
         if f.state == S_ATTACK:
             f.timer -= 1
             if f.timer <= 0:
-                windup, active, recover, _, _ = f.attacks()[f.move]
+                windup, active, recover, _, _ = self.spec_of(f, f.move)
                 if f.phase == "windup":
                     f.phase, f.timer = "active", active
                 elif f.phase == "active":
@@ -504,7 +513,7 @@ class Duel:
                 else:
                     f.state, f.phase, f.move = S_IDLE, "", None
                     f.cooldown = 4
-        elif f.state in (S_HURT, S_WALK, S_BLOCK, S_IDLE):
+        elif f.state in (S_HURT, S_WALK, S_BLOCK, S_IDLE, S_DUCK):
             f.timer -= 1
             if f.timer <= 0:
                 f.state, f.timer = S_IDLE, 1

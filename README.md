@@ -22,7 +22,7 @@
 | **duel** | 两个火柴人徒手对打（纯 numpy 物理） | 9 维基因（武器/攻击性/格挡/踢/距离/反应/待机/捡道具/绕陷阱） | 198 | Elo 制 | fit 0.508 → 1.126，Elo 1573，流派「反击×20」 |
 | **sgs** | 三国杀式卡牌单挑 | 4 维基因（攻击性/防守/回血/距离） | 2670 | Lv4（4 维全开） | fit 0.660 —— **零满分，还在爬** |
 | **gomoku** | 五子棋 15×15，对手是 Rapfi（Elo 3073） | 双头网络 48 通道（policy 225 + value 1）+ VCF 搜索 | 300+ 局实测 | 固定强敌 | **0 胜 / 4.9%**，存活 25.5 → **48.2 手** |
-| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞 | 15/23 维观测 → MLP(64) → 6 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
+| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞，`--env freeform` 再加竖直轴与跳跃/下蹲 | 15/23/29 维观测 → MLP(64) → 6/8 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
 
 > 代数为各域 `evolve.log` / `progress.tsv` 的实时值，截至 2026-10-29 22:10；gomoku 为 2026-10-30 凌晨实测。
 > 前三个域当时都在后台跑，数字会继续长。
@@ -142,6 +142,27 @@ BC（12 局 × 120 epoch，示范对手轮换 random/gene1/gene2/镜像）：`bc
 holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 一直没到饱和，课程不升级。
 36 个测试里有 20 个是肢体运动学/胶囊/接触规则用例。
 
+#### 自由二维（`--env freeform`）
+
+`domains/duel/freeform.py` 在肢体版上加了竖直轴，动作从 6 个扩到 8 个：
+
+- 新增 **JUMP**（动作 6）：重力 9.8 m/s²，起跳 2.55 m/s，最高约 0.33 m、滞空约 31 帧
+- 新增 **DUCK**（动作 7）：头降到 1.19 m，直拳（1.64 m）和头踢（1.70 m）会从头顶掠过；前踢在髋高仍能命中
+- **下蹲中踢** → 低扫（脚心 ~0.46 m）：低于所有护体胶囊，**格挡挡不住**，但只能打到腿（0.75x）
+- **空中踢** → 飞踢：脚心升到下巴高度，9 帧起手、9 伤害（头 12.2）
+- 观测 23 → 29 维（双方离地高度/竖直速度 + 两个下蹲标记）
+
+四条规则不是写死的克制表，而是胶囊几何自然长出来的：
+
+| | 克 | 被克 |
+|---|---|---|
+| 下蹲 | 直拳、头踢 | 前踢（打躯干） |
+| 低扫 | 格挡 | 跳（腾空后腿抬高） |
+| 飞踢 | — | 起手慢，落地即空窗 |
+
+`metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `act_hist`（策略实际按键分布），
+用来区分"新动作可用"和"策略真的在用"。实测见 FINDINGS 第十一节。
+
 ---
 
 ## 三、怎么跑
@@ -220,6 +241,10 @@ python domains/neuro/train.py --no-curriculum --out-dir runs/neuro_flat
 python domains/neuro/train.py --env articulated --bc-episodes 12 --bc-epochs 120 \
     --iterations 6 --episodes 6 --out-dir runs/neuro_art
 
+# 自由二维版本（29 维观测 / 8 动作；想看到跳跃下蹲被用起来，把熵系数调高）
+python domains/neuro/train.py --env freeform --entropy-coef 0.06 \
+    --iterations 8 --episodes 6 --out-dir runs/neuro_free
+
 # 调整升级耐心 / 世界模型门控阈值
 python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015 \
     --out-dir runs/neuro_tuned
@@ -228,7 +253,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 36 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触
+python -m unittest discover -s tests -v   # 52 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维
 ```
 
 ---
@@ -245,6 +270,7 @@ domains/
   duel/    duel.py      物理与规则（纯 numpy）
            limbs.py     2D 矢状面肢体运动学 + 胶囊碰撞几何
            articulated.py 肢体接触版对局（23 维观测、clash、部位伤害）
+           freeform.py    自由二维版：加竖直轴、跳跃/下蹲（29 维观测、8 动作）
            bot.py       基因 → 策略
            evolve.py    进化主循环（含 Elo 与名人堂）
            verify.py    规则自检
@@ -275,6 +301,7 @@ selfplay/
            recorder.py  metrics.jsonl / progress.tsv / resume 状态
 tests/     test_neuro.py 神经栈的单元与回归测试
            test_limbs.py 肢体运动学、胶囊几何与接触规则测试
+           test_freeform.py 跳跃/下蹲/低扫/飞踢与二维物理测试
 
 data/      前三域的进化轨迹（每 N 代抽样）+ 难度晋升历史 + 当前冠军
 docs/      FINDINGS.md —— 走通到哪一步、崩在哪、下一步怎么扩

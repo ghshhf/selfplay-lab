@@ -17,10 +17,14 @@ if str(DUEL_DIR) not in sys.path:
 
 import duel as D  # noqa: E402
 import articulated as A  # noqa: E402
+import freeform as F  # noqa: E402
 
 OBS_DIM = 15
 ARTICULATED_OBS_DIM = A.OBS_DIM
+FREEFORM_OBS_DIM = F.OBS_DIM
 N_ACTIONS = 6
+FREEFORM_N_ACTIONS = F.N_ACTIONS
+FREEFORM_ACTION_NAMES = tuple(F.ACTION_NAMES)
 ACTION_NAMES = tuple(D.ACTION_NAMES)
 
 
@@ -57,3 +61,13 @@ class ArticulatedArena(NeuralArena):
         self.env = A.ArticulatedDuel(seed=seed, max_frames=max_frames,
                                      env_cfg=env_cfg, weapons=weapons,
                                      start_gap=start_gap)
+
+
+class FreeformArena(NeuralArena):
+    """Articulated contact plus a vertical axis (29-dim obs, 9 actions)."""
+
+    def __init__(self, seed=None, max_frames=1800, env_cfg=None,
+                 weapons=("none", "none"), start_gap=2.2):
+        self.env = F.FreeformDuel(seed=seed, max_frames=max_frames,
+                                  env_cfg=env_cfg, weapons=weapons,
+                                  start_gap=start_gap)

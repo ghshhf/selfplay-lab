@@ -34,8 +34,11 @@ GUARD_R = 0.10
 
 # state ids mirror duel.py
 S_IDLE, S_WALK, S_ATTACK, S_BLOCK, S_HURT, S_KO = range(6)
+S_DUCK, S_JUMP = 6, 7
 PUNCH, KICK = 2, 3
 HIGH_KICK = 6  # internal technique, selected automatically inside kicking range
+LOW_KICK = 7   # internal: low roundhouse from a crouch, hits the legs
+FLYING = 8     # internal: airborne kick at head height
 # (windup, active, recover, nominal reach, damage) -- frames at 60 Hz.
 # Jab is the fastest option; front kick out-ranges it; the head kick is slower
 # but lands 1.35x on the head and only exists in the pocket (< 0.84 m).
@@ -43,6 +46,8 @@ ART_MOVES = {
     PUNCH: (4, 3, 7, 1.04, 5.5),       # jab / oi-zuki
     KICK: (7, 4, 11, 1.29, 8.5),       # front kick / mae geri
     HIGH_KICK: (12, 4, 18, 0.83, 12.5),  # head kick / mawashi geri
+    LOW_KICK: (6, 3, 12, 0.95, 5.0),   # low roundhouse / gedan mawashi
+    FLYING: (9, 4, 16, 1.10, 9.0),     # flying kick / hien geri
 }
 
 
@@ -58,14 +63,17 @@ def extension(state, phase, timer, spec) -> float:
     return max(0.0, min(1.0, (timer - 1.0) / max(1.0, float(recover))))
 
 
-def joint_points(facing, root_x, shoulder_deg, elbow_deg, hip_deg, knee_deg):
+def joint_points(facing, root_x, shoulder_deg, elbow_deg, hip_deg, knee_deg,
+                 root_y=0.0, crouch=0.0):
     """Forward kinematics in the sagittal plane.
 
     Angles are degrees from straight-down, positive towards the facing
     direction.  ``elbow_deg`` / ``knee_deg`` are relative joint bends.
+    ``root_y`` lifts the whole body (jump); ``crouch`` (0..1) lowers hips,
+    torso and head, which is what makes high attacks whiff over a duck.
     """
     f = 1.0 if facing >= 0 else -1.0
-    sx, sy = root_x, SHOULDER_Y
+    sx, sy = root_x, SHOULDER_Y + root_y - 0.38 * crouch
     a1 = math.radians(shoulder_deg)
     a2 = math.radians(shoulder_deg + elbow_deg)
     ex = sx + UPPER_ARM * math.sin(a1) * f
@@ -73,7 +81,7 @@ def joint_points(facing, root_x, shoulder_deg, elbow_deg, hip_deg, knee_deg):
     hx = ex + FOREARM * math.sin(a2) * f
     hy = ey - FOREARM * math.cos(a2)
 
-    px, py = root_x, HIP_Y
+    px, py = root_x, HIP_Y + root_y - 0.30 * crouch
     b1 = math.radians(hip_deg)
     b2 = math.radians(hip_deg + knee_deg)
     kx = px + THIGH * math.sin(b1) * f
@@ -84,13 +92,17 @@ def joint_points(facing, root_x, shoulder_deg, elbow_deg, hip_deg, knee_deg):
     return {
         "shoulder": (sx, sy), "elbow": (ex, ey), "hand": (hx, hy),
         "hip": (px, py), "knee": (kx, ky), "foot": (fx, fy),
-        "neck": (root_x, TORSO_TOP_Y), "head": (root_x, HEAD_Y),
+        "neck": (root_x, TORSO_TOP_Y + root_y - 0.38 * crouch),
+        "head": (root_x, HEAD_Y + root_y - 0.47 * crouch),
     }
 
 
-def pose(facing, root_x, state, move, phase, timer, spec, frame):
+def pose(facing, root_x, state, move, phase, timer, spec, frame,
+         root_y=0.0, crouch=None):
     """Map a fighter's discrete state to joint angles, then to points."""
     ext = extension(state, phase, timer, spec) if spec else 0.0
+    if crouch is None:
+        crouch = 1.0 if state == S_DUCK else 0.0
 
     if state == S_ATTACK and move == PUNCH:
         # High guard -> straight jab at chin height (4-frame windup).
@@ -107,6 +119,25 @@ def pose(facing, root_x, state, move, phase, timer, spec, frame):
         sh, el = 55.0, 70.0
         hip = 20.0 + 110.0 * ext
         knee = 60.0 - 40.0 * ext
+    elif state == S_ATTACK and move == LOW_KICK:
+        # Low roundhouse from a half-crouch: foot sweeps at knee height (0.46 m),
+        # below every guard capsule, so blocking cannot stop it.
+        sh, el = 55.0, 95.0
+        hip = 10.0 + 50.0 * ext
+        knee = 6.0 * (1.0 - ext)
+        crouch = 0.35
+    elif state == S_ATTACK and move == FLYING:
+        # Flying kick: body is airborne; the leg extends up-forward, so the
+        # foot lands near a standing opponent's chin.
+        sh, el = 45.0, 60.0
+        hip = 95.0 + 20.0 * ext
+        knee = 10.0 * (1.0 - ext)
+    elif state == S_DUCK:
+        sh, el = 55.0, 105.0
+        hip, knee = 2.0, 76.0
+    elif state == S_JUMP:
+        sh, el = 48.0, 70.0
+        hip, knee = 30.0, 70.0
     elif state == S_BLOCK:
         sh, el = 55.0, 110.0
         hip, knee = 6.0, 8.0
@@ -126,7 +157,8 @@ def pose(facing, root_x, state, move, phase, timer, spec, frame):
         sh, el = 12.0, 14.0
         hip, knee = 4.0, 6.0
 
-    return joint_points(facing, root_x, sh, el, hip, knee)
+    return joint_points(facing, root_x, sh, el, hip, knee,
+                        root_y=root_y, crouch=crouch)
 
 
 def attack_capsule(ch):
