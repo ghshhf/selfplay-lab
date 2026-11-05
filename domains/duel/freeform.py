@@ -84,7 +84,7 @@ class FreeformDuel(ArticulatedDuel):
         return super().reset(seed)
 
     # ------------------------------------------------------------------- pose
-    def pose_of(self, f):
+    def _build_pose(self, f):
         spec = TECH.get(f.move) if f.state == S_ATTACK else None
         return limbs.pose(f.facing, f.x, f.state, f.move, f.phase, f.timer,
                           spec, self.frames, root_y=f.y)

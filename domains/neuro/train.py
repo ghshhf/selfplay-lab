@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from selfplay.core.budget import ComputeLedger  # noqa: E402
 from selfplay.core.curriculum import CurriculumConfig, WorldCurriculum  # noqa: E402
 from selfplay.core.health import HealthConfig, diagnose  # noqa: E402
 from selfplay.core.manifest import RunManifest, make_run_id  # noqa: E402
@@ -103,6 +104,8 @@ class NeuroTrainer:
         self.best_holdout = -1.0
         self.bc_loss = None
         self.run_id = ""
+        self.ledger = ComputeLedger()
+        self._last_eval = None
 
         self.curriculum = None
         if args.curriculum:
@@ -162,6 +165,7 @@ class NeuroTrainer:
             "bc_loss": self.bc_loss,
             "league_size": len(self.league),
             "curriculum": self.curriculum.state_dict() if self.curriculum else None,
+            "budget": self.ledger.state_dict(),
         }
         self.recorder.save_state(state, self._arrays())
 
@@ -179,6 +183,7 @@ class NeuroTrainer:
         cur_state = state.get("curriculum")
         if self.curriculum is not None and cur_state:
             self.curriculum.load_state_dict(cur_state)
+        self.ledger.load_state_dict(state.get("budget"))
         if "rng_state" in state:
             self.rng = np.random.default_rng()
             self.rng.bit_generator.state = state["rng_state"]
@@ -482,15 +487,23 @@ class NeuroTrainer:
             self.league.pop(0)
 
     def train_iteration(self, iteration: int):
-        episodes, stats = self._collect(self.args.episodes, iteration)
-        ppo = self.agent.train(episodes, self.rng)
-        world_mse = self._world_model_step(episodes)
+        self.ledger.start_iteration()
+        with self.ledger.phase("collect"):
+            episodes, stats = self._collect(self.args.episodes, iteration)
+        with self.ledger.phase("ppo"):
+            ppo = self.agent.train(episodes, self.rng)
+        with self.ledger.phase("world"):
+            world_mse = self._world_model_step(episodes)
         if world_mse is not None:
             self.world_mse_history.append(float(world_mse))
             self.world_mse_history = self.world_mse_history[-50:]
 
-        holdout = self._evaluate(self.args.eval_episodes, "holdout")
-        random_eval = self._evaluate(self.args.eval_episodes, "random")
+        with self.ledger.phase("eval"):
+            if (iteration % self.args.eval_every == 0
+                    or self._last_eval is None):
+                self._last_eval = (self._evaluate(self.args.eval_episodes, "holdout"),
+                                   self._evaluate(self.args.eval_episodes, "random"))
+            holdout, random_eval = self._last_eval
         entropy = self._entropy(episodes)
 
         self.history.append(float(stats["win"]))
@@ -514,7 +527,8 @@ class NeuroTrainer:
             )
 
         if (iteration + 1) % self.args.snapshot_every == 0:
-            self._snapshot()
+            with self.ledger.phase("snapshot"):
+                self._snapshot()
 
         rec = {
             "iter": iteration + 1,
@@ -550,7 +564,13 @@ class NeuroTrainer:
             "curriculum_reason": None if curriculum_step is None else curriculum_step["reason"],
             "health": health["status"],
             "health_reasons": health["reasons"],
+            "eval_games": holdout["games"],
         }
+        compute = self.ledger.finish_iteration(stats["steps"])
+        compute["iter"] = iteration + 1
+        compute["run_id"] = self.run_id
+        self.last_compute = compute
+        rec.update(self.ledger.skill(holdout["win"], holdout["games"]))
         return rec
 
     def run(self):
@@ -559,6 +579,7 @@ class NeuroTrainer:
             rec = self.train_iteration(iteration)
             rec["elapsed_sec"] = round(time.time() - t0, 2)
             self.recorder.log(rec)
+            self.recorder.log_compute(self.last_compute)
             self.next_iter = iteration + 1
             self._save_state()
             print(json.dumps(rec, ensure_ascii=False), flush=True)
@@ -569,7 +590,7 @@ def build_argparser():
     ap.add_argument("--env", choices=("duel", "articulated", "freeform"),
                     default="duel",
                     help="duel: 1-D reach check; articulated: limb-capsule "
-                         "contact; freeform: articulated + jump/duck (9 actions)")
+                         "contact; freeform: articulated + jump/duck (8 actions)")
     ap.add_argument("--iterations", type=int, default=10)
     ap.add_argument("--episodes", type=int, default=4)
     ap.add_argument("--max-frames", type=int, default=600)
@@ -595,6 +616,9 @@ def build_argparser():
     ap.add_argument("--league-size", type=int, default=6)
     ap.add_argument("--warmup", type=int, default=3)
     ap.add_argument("--eval-episodes", type=int, default=4)
+    ap.add_argument("--eval-every", type=int, default=1,
+                    help="score every N iterations; >1 reuses the last score "
+                         "and cuts the eval share (often the largest cost)")
     ap.add_argument("--health-window", type=int, default=10)
     ap.add_argument("--train-gap", type=float, default=2.2)
     ap.add_argument("--eval-gap", type=float, default=2.2)

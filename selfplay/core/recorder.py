@@ -80,6 +80,13 @@ class RunRecorder:
         with self.progress_path.open("a", encoding="utf-8") as f:
             f.write("\t".join(row) + "\n")
 
+    def log_compute(self, record: Mapping[str, Any]):
+        """Timing lives in its own file: it is machine-dependent, and
+        ``metrics.jsonl`` must stay reproducible for resume equivalence."""
+        with (self.out_dir / "compute.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(record), ensure_ascii=False,
+                               default=_json_default) + "\n")
+
     # --------------------------------------------------------- checkpointing
     def save_state(self, state: Mapping[str, Any], arrays: Mapping[str, np.ndarray] | None = None):
         tmp = self.state_path.with_suffix(".json.tmp")

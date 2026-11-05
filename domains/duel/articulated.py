@@ -57,6 +57,22 @@ class ArticulatedDuel(Duel):
 
     # ------------------------------------------------------------------- pose
     def pose_of(self, f):
+        # Observation and combat both ask for the same pose within one frame.
+        # Kinematics costs ~25 us per fighter, and the 29-dim observation is
+        # 44% of a step, so cache by (fighter, frame) instead of recomputing.
+        key = (f.x, getattr(f, "y", 0.0), f.facing, f.state, f.move, f.phase,
+               f.timer, self.frames // 12)
+        cache = getattr(self, "_pose_cache", None)
+        if cache is None:
+            cache = self._pose_cache = {}
+        hit = cache.get(id(f))
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        pose = self._build_pose(f)
+        cache[id(f)] = (key, pose)
+        return pose
+
+    def _build_pose(self, f):
         spec = ART_MOVES.get(f.move) if f.state == S_ATTACK else None
         return limbs.pose(f.facing, f.x, f.state, f.move, f.phase,
                           f.timer, spec, self.frames)

@@ -187,6 +187,37 @@ python domains/duel/play.py --auto --rounds 8 --reaction 12 \
 也就是说算法赢的几乎全部是"零延迟 + 每秒 60 次决策"的帧优势，而不是更聪明的战术。
 详见 FINDINGS 第十二节。
 
+#### 算力账本：每 CPU 秒换来多少 Elo
+
+```bash
+python tools/bench.py --steps 20000            # 单核微基准：环境 / 观测 / 前向
+python tools/bench.py --steps 20000 --json runs/bench.json
+```
+
+本机实测（单核，freeform）：
+
+| 环节 | 耗时 | 占一步 |
+|---|---|---|
+| 环境 `step` | 38.2 µs | 100% |
+| 其中观测构造 | 21.3 µs | 56% |
+| 策略前向 29→64→8 | 30.7 µs | — |
+
+端到端约 **14.5k 帧/s**（估算），一次 8 iteration、6 局 × 500 帧的训练实测
+**3027 帧/s**——差距全部来自评估和 PPO 更新。训练会把每个 iteration 的分段耗时写进
+`compute.jsonl`（`collect` / `ppo` / `eval` / `wall_sec` / `frames_per_sec` / `elo_per_kcs`），
+`metrics.jsonl` 只保留可复现的技能指标。
+
+实测结论（同 seed、8 iteration、6 局 × 500 帧）：
+
+| 配置 | 总耗时 | collect | eval | 最终 holdout |
+|---|---|---|---|---|
+| 默认（每轮评估） | 7.9 s | 2.4 s | **5.1 s（65%）** | 0.875 |
+| `--eval-every 4` | **4.2 s** | 2.5 s | 1.3 s | 0.875 |
+
+同一份技能，少一半算力。另有一个零风险的微优化：姿态正向运动学按
+`(位置, 状态, 招式, 帧桶)` 缓存后，articulated 每步 **−13%**、freeform **−8%**
+（A/B 实测，见 `tools/bench.py`）。详见 FINDINGS 第十三节。
+
 ---
 
 ## 三、怎么跑
@@ -274,10 +305,10 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
     --out-dir runs/neuro_tuned
 ```
 
-产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
+产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 55 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维、玩家模式
+python -m unittest discover -s tests -v   # 61 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维、玩家模式、算力账本
 ```
 
 ---
@@ -313,7 +344,7 @@ domains/
            diag.py      单局诊断（逐手看命中哪道闸门）
            results/     成果：逐局记录、训练日志、两个关键权重、A/B 原始记录
            logs/        遗传搜索版（路线 A）的历史运行日志
-  neuro/   env.py       把 duel / articulated 包装成 15 / 23 维观测、6 动作的训练环境
+  neuro/   env.py       把 duel / articulated / freeform 包装成 15 / 23 / 29 维观测、6 / 8 动作的环境
            opponents.py random / scripted / 冻结快照 对手池 + BC 专家
            train.py     BC 预热 + PPO + league + 世界模型 + health + resume
 selfplay/
@@ -322,12 +353,15 @@ selfplay/
            world_model.py  one-step 观测预测模型
   core/    health.py    评估器健康判据
            curriculum.py 世界课程（health + world model 双门控）
+           budget.py    算力账本：分段计时 + Elo/CPU 秒
            manifest.py  run 元信息
            recorder.py  metrics.jsonl / progress.tsv / resume 状态
+tools/     bench.py     单核微基准：环境步进 / 观测 / 前向
 tests/     test_neuro.py 神经栈的单元与回归测试
            test_limbs.py 肢体运动学、胶囊几何与接触规则测试
            test_freeform.py 跳跃/下蹲/低扫/飞踢与二维物理测试
            （含玩家模式的反应延迟与战报对账）
+           test_budget.py  Elo 换算与算力账本
 
 data/      前三域的进化轨迹（每 N 代抽样）+ 难度晋升历史 + 当前冠军
 docs/      FINDINGS.md —— 走通到哪一步、崩在哪、下一步怎么扩
