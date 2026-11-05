@@ -132,15 +132,23 @@ def heuristic_action(obs, pocket: bool = False) -> int:
 
 
 class SnapshotOpponent:
-    """Deterministic frozen neural policy, acting on the observation."""
+    """Deterministic frozen neural policy, acting on the observation.
 
-    def __init__(self, agent):
+    ``encode`` maps the arena observation to the policy's input space.  With
+    ``--latent-policy`` a snapshot expects 8 latent numbers, not the 33 hand-
+    crafted ones, so the same encoder must be applied on both sides.
+    """
+
+    def __init__(self, agent, encode=None):
         self.agent = agent
+        self.encode = encode
         self._rng = np.random.default_rng(0)
 
     def reset(self, seed):
         pass
 
     def act(self, me, opp, obs):
+        if self.encode is not None:
+            obs = self.encode.forward(np.asarray(obs, dtype=np.float32)[None, :])[0]
         action, _logp, _value = self.agent.act(obs, self._rng, deterministic=True)
         return int(action)

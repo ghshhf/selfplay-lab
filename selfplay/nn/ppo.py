@@ -56,6 +56,7 @@ class Step:
     reward: float
     done: bool
     ref_logp: float = 0.0         # log-prob under the frozen reference policy
+    raw_obs: np.ndarray | None = None   # arena-space observation, for the world model
 
 
 @dataclass

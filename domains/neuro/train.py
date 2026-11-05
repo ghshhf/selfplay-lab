@@ -38,9 +38,11 @@ from selfplay.core.manifest import RunManifest, make_run_id  # noqa: E402
 from selfplay.core.recorder import RunRecorder  # noqa: E402
 from selfplay.nn.ppo import (Episode, PPOAgent, PPOConfig, Step,  # noqa: E402
                              log_softmax)
+from selfplay.core.stats import summarise  # noqa: E402
 from selfplay.nn.latent import LatentWorldModel  # noqa: E402
 from selfplay.nn.llmstack import (EMA, EntropySchedule, LRSchedule,  # noqa: E402
                                   RejectionBuffer, mirror_batch)
+from selfplay.nn.pbt import PBTPopulation, clone_agent  # noqa: E402
 from selfplay.nn.world_model import WorldModel  # noqa: E402
 
 try:
@@ -136,6 +138,10 @@ class NeuroTrainer:
             self.n_actions = N_ACTIONS
             self.reach_scale = 1.0
 
+        self.policy_dim = (args.latent_dim if args.latent_policy
+                           else self.obs_dim)
+        self.encoder = None          # set when --latent-policy is active
+
         self.ppo_cfg = PPOConfig(
             gamma=args.gamma, lam=args.lam, clip=args.clip,
             epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
@@ -143,11 +149,11 @@ class NeuroTrainer:
             max_grad_norm=args.max_grad_norm,
             weight_decay=args.weight_decay, kl_coef=args.kl_coef,
         )
-        self.agent = PPOAgent(self.obs_dim, self.n_actions, hidden=args.hidden,
+        self.agent = PPOAgent(self.policy_dim, self.n_actions, hidden=args.hidden,
                               cfg=self.ppo_cfg, seed=args.seed)
         self.world_model = None
-        if args.world_model:
-            if getattr(args, "latent_world", False):
+        if args.world_model or args.latent_policy:
+            if getattr(args, "latent_world", False) or args.latent_policy:
                 self.world_model = LatentWorldModel(
                     self.obs_dim, self.n_actions, hidden=args.hidden,
                     latent=args.latent_dim, lr=args.world_lr,
@@ -166,6 +172,9 @@ class NeuroTrainer:
         self.best_holdout = -1.0
         self.bc_loss = None
         self.recon_mse = None
+        self.encoder_metrics = None
+        self._surprise_ema = 1e-3
+        self._surprise_sum = 0.0
         self.run_id = ""
         self.ledger = ComputeLedger()
         self._last_eval = None
@@ -190,15 +199,21 @@ class NeuroTrainer:
         if args.ema_decay > 0:
             self.ema = EMA([self.agent.policy, self.agent.value],
                            decay=args.ema_decay)
-            self.ema_agent = PPOAgent(self.obs_dim, self.n_actions,
+            self.ema_agent = PPOAgent(self.policy_dim, self.n_actions,
                                       hidden=args.hidden, cfg=self.ppo_cfg,
                                       seed=0)
         else:
             self.ema = None
             self.ema_agent = None
-        self.rft = (RejectionBuffer(self.obs_dim, max_steps=args.rft_buffer)
+        self.rft = (RejectionBuffer(self.policy_dim, max_steps=args.rft_buffer)
                     if args.rft_frac > 0 else None)
         self.rft_loss = None
+
+        # ---- weight-space evolution (PBT-lite) ----
+        # Built after BC / checkpoint load: a population cloned from an
+        # untrained net is noise, not evolution.
+        self.pbt = None
+        self.pbt_stats = None
 
         # ---- self-evolution: the agent's own opponent pool ----
         self.pool = None
@@ -215,7 +230,7 @@ class NeuroTrainer:
             # A frozen copy of the untrained policy is the seed opponent.
             # Self-play can start from it without any authored curriculum.
             seed = self._frozen_self()
-            self.pool.add("self0", lambda s=seed: SnapshotOpponent(s),
+            self.pool.add("self0", lambda s=seed: SnapshotOpponent(s, encode=self.encoder),
                           origin="self")
 
         if args.resume:
@@ -225,16 +240,29 @@ class NeuroTrainer:
             # then fine-tunes it, instead of asking a randomly initialised
             # network to discover "walk close, then kick" from sparse rewards.
             self.bc_loss = self._behavior_clone()
+        elif args.latent_policy:
+            # Zero-data run still needs a coordinate system before it can act.
+            # Random play is enough: an encoder only has to be *informative*,
+            # not expert.
+            obs, acts, nxt, rew = self._random_transitions(
+                max(2, args.imagine_batch // 16))
+            self._fit_encoder(obs, acts, nxt, rew)
+            self.bc_loss = None
 
         # The RLHF anchor is the behaviour-cloned policy, frozen before any
         # PPO update.  It has to be created after BC / checkpoint loading.
         if args.kl_coef > 0:
-            self.ref_agent = PPOAgent(self.obs_dim, self.n_actions,
+            self.ref_agent = PPOAgent(self.policy_dim, self.n_actions,
                                       hidden=args.hidden, cfg=self.ppo_cfg,
                                       seed=0)
             self.ref_agent.policy.copy_from(self.agent.policy)
         if self.ema is not None and self.ema.updates == 0:
             self.ema.update()
+
+        if self.args.pbt:
+            self.pbt = PBTPopulation(self.agent, size=self.args.pbt_size,
+                                     sigma=self.args.pbt_sigma,
+                                     seed=self.args.seed + 7)
 
         if self.pool is not None:
             # Rebuild the frozen-self entries that came back with the league.
@@ -242,7 +270,7 @@ class NeuroTrainer:
             for i, snap in enumerate(self.league):
                 name = "league%d" % i
                 if self.pool.get(name) is None:
-                    self.pool.add(name, lambda s=snap: SnapshotOpponent(s),
+                    self.pool.add(name, lambda s=snap: SnapshotOpponent(s, encode=self.encoder),
                                   origin="self")
             self.pool.load_stats(self._loaded_pool_state)
 
@@ -329,17 +357,74 @@ class NeuroTrainer:
         self.league = []
         i = 0
         while ("league%d__meta" % i) in arrays:
-            snap = PPOAgent(self.obs_dim, self.n_actions, hidden=self.args.hidden,
-                            cfg=self.ppo_cfg, seed=0)
+            snap = PPOAgent(self.policy_dim, self.n_actions,
+                            hidden=self.args.hidden, cfg=self.ppo_cfg, seed=0)
             snap.load_state_dict(arrays, "league%d" % i)
             self.league.append(snap)
             i += 1
 
+        if (isinstance(self.world_model, LatentWorldModel)
+                and self.args.latent_policy):
+            self.encoder = self.world_model.encoder
+            self.world_model.freeze_encoder = True
+        if self.pbt is not None:
+            self.pbt = PBTPopulation(self.agent, size=self.args.pbt_size,
+                                     sigma=self.args.pbt_sigma,
+                                     seed=self.args.seed + 7)
+
     # ------------------------------------------------------- imitation warm-up
+    def _pi_obs(self, raw):
+        """Observation as the policy sees it: raw arena state, or its latent."""
+        raw = np.asarray(raw, dtype=np.float32)
+        if self.encoder is None:
+            return raw
+        return self.encoder.forward(raw.reshape(1, -1))[0]
+
+    def _fit_encoder(self, obs, acts, next_obs, rewards, epochs=None):
+        """Self-supervised warm-up of the latent encoder, then freeze it.
+
+        The policy is about to consume ``z`` instead of the 33 hand-crafted
+        numbers.  If the encoder kept training afterwards, the policy's input
+        coordinate system would drift under it every iteration.
+        """
+        epochs = self.args.encoder_epochs if epochs is None else epochs
+        scaled = np.asarray(rewards, dtype=np.float64) * self.args.reward_scale
+        out = {}
+        for _ in range(max(1, epochs)):
+            out = self.world_model.train(obs, acts, next_obs, self.rng,
+                                         epochs=1, rewards=scaled)
+        self.encoder = self.world_model.encoder
+        self.world_model.freeze_encoder = True
+        self.encoder_metrics = out
+        return out
+
+    def _random_transitions(self, episodes: int):
+        """Fallback for zero-data runs: random play is enough to learn a
+        coordinate system, it does not need to be good play."""
+        obs, acts, next_obs, rews = [], [], [], []
+        for _ in range(episodes):
+            seed = int(self.rng.integers(2 ** 31))
+            arena = self.arena_cls(seed=seed, max_frames=max(200, self.args.max_frames // 2),
+                                   start_gap=self.args.train_gap)
+            o0, o1 = arena.reset(seed)
+            while True:
+                a0 = int(self.rng.integers(self.n_actions))
+                a1 = int(self.rng.integers(self.n_actions))
+                n0, n1, r0, r1, done, _info = arena.step(a0, a1)
+                obs.append(o0); acts.append(a0); next_obs.append(n0); rews.append(r0)
+                obs.append(o1); acts.append(a1); next_obs.append(n1); rews.append(r1)
+                o0, o1 = n0, n1
+                if done:
+                    break
+        return (np.stack(obs).astype(np.float32),
+                np.asarray(acts, dtype=np.int64),
+                np.stack(next_obs).astype(np.float32),
+                np.asarray(rews, dtype=np.float64))
+
     def _behavior_clone(self):
         gap = self.args.train_gap
         pocket = self.args.env == "articulated"
-        obs, acts = [], []
+        obs, acts, next_obs, rews = [], [], [], []
         demo_rng = np.random.default_rng(self.args.seed + 100003)
         # Vary who the expert fights.  Cloning a mirror match teaches the net
         # to read the opponent's pose instead of the distance, which then
@@ -365,17 +450,27 @@ class NeuroTrainer:
                         a0 = int(heuristic_action(o0, pocket=pocket))
                         a1 = (opp.act(arena.env.p1, arena.env.p0, o1) if opp
                               else int(heuristic_action(o1, pocket=pocket)))
-                        obs.append(o0)
-                        acts.append(a0)
                     else:
                         a0 = (opp.act(arena.env.p0, arena.env.p1, o0) if opp
                               else int(heuristic_action(o0, pocket=pocket)))
                         a1 = int(heuristic_action(o1, pocket=pocket))
-                        obs.append(o1)
-                        acts.append(a1)
-                    o0, o1, _r0, _r1, done, _info = arena.step(a0, a1)
+                    me = o0 if side == 0 else o1
+                    me_act = a0 if side == 0 else a1
+                    n0, n1, r0, r1, done, _info = arena.step(a0, a1)
+                    nm = n0 if side == 0 else n1
+                    obs.append(me)
+                    acts.append(me_act)
+                    next_obs.append(nm)
+                    rews.append(r0 if side == 0 else r1)
+                    o0, o1 = n0, n1
                     if done:
                         break
+        if self.args.latent_policy:
+            if not obs:
+                obs, acts, next_obs, rews = self._random_transitions(4)
+            self._fit_encoder(np.stack(obs).astype(np.float32),
+                              np.asarray(acts, dtype=np.int64),
+                              np.stack(next_obs).astype(np.float32), rews)
         if not obs:
             return None
         x = np.stack(obs).astype(np.float32)
@@ -394,6 +489,8 @@ class NeuroTrainer:
             # the walk-in-and-punch prior.
             noise = self.rng.random(len(y)) < 0.10
             y[noise] = self.rng.integers(0, self.n_actions, int(noise.sum()))
+        if self.encoder is not None:
+            x = self.encoder.forward(x)
         onehot_cache = np.eye(self.agent.n_actions, dtype=np.float64)
         epoch_loss = 0.0
         for _epoch in range(self.args.bc_epochs):
@@ -449,7 +546,7 @@ class NeuroTrainer:
         r = float(self.rng.random())
         if self.league and r < 0.45:
             idx = int(self.rng.integers(len(self.league)))
-            return "league", SnapshotOpponent(self.league[idx])
+            return "league", SnapshotOpponent(self.league[idx], encode=self.encoder)
         if r < 0.80:
             pool = self._scripted_pool()
             gene = pool[int(self.rng.integers(len(pool)))]
@@ -457,6 +554,24 @@ class NeuroTrainer:
         return "random", RandomOpponent(n_actions=self.n_actions)
 
     # --------------------------------------------------------------- episodes
+    def _surprise(self, obs, action, next_obs) -> float:
+        """Curiosity bonus: prediction error of the latent world model.
+
+        Only *above-average* error is rewarded (``ratio - 1``), otherwise the
+        agent can farm a constant offset by standing still.  The bonus is
+        normalised by a running mean so it does not depend on the absolute
+        scale of the model's loss.
+        """
+        if self.args.surprise_coef <= 0 or not isinstance(
+                self.world_model, LatentWorldModel):
+            return 0.0
+        err = float(self.world_model.error(obs, action, next_obs))
+        self._surprise_ema = 0.995 * self._surprise_ema + 0.005 * err
+        ratio = err / (self._surprise_ema + 1e-6)
+        bonus = self.args.surprise_coef * min(max(ratio - 1.0, 0.0), 2.0)
+        self._surprise_sum += bonus
+        return bonus
+
     def _play(self, opponent, seed: int, collect: bool):
         arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                             start_gap=self.args.train_gap)
@@ -466,7 +581,8 @@ class NeuroTrainer:
         total_reward = 0.0
         info = {"winner": -1}
         while True:
-            me_obs = o0 if side == 0 else o1
+            me_raw = o0 if side == 0 else o1
+            me_obs = self._pi_obs(me_raw)
             action, logp, value = self.agent.act(me_obs, self.rng)
 
             if side == 0:
@@ -478,6 +594,9 @@ class NeuroTrainer:
 
             n0, n1, r0, r1, done, info = arena.step(a0, a1)
             reward = r0 if side == 0 else r1
+            next_raw = n0 if side == 0 else n1
+            surprise = self._surprise(me_raw, action, next_raw)
+            reward += surprise
             total_reward += reward
             if collect:
                 ref_logp = (self.ref_agent.logp_of(me_obs, action)
@@ -487,12 +606,13 @@ class NeuroTrainer:
                     action=action, logp=logp, value=value,
                     reward=reward * self.args.reward_scale, done=done,
                     ref_logp=ref_logp,
+                    raw_obs=np.asarray(me_raw, dtype=np.float32).copy(),
                 ))
             o0, o1 = n0, n1
             if done:
                 break
 
-        ep.last_obs = np.asarray(o0 if side == 0 else o1, dtype=np.float32)
+        ep.last_obs = self._pi_obs(o0 if side == 0 else o1)
         winner = int(info.get("winner", -1))
         if winner < 0:
             outcome = 0.5
@@ -596,7 +716,8 @@ class NeuroTrainer:
                 o0, o1 = arena.reset(seed)
                 info = {"winner": -1}
                 while True:
-                    me_obs = o0 if side == 0 else o1
+                    me_raw = o0 if side == 0 else o1
+                    me_obs = self._pi_obs(me_raw)
                     action, _logp, _value = agent.act(me_obs, eval_rng, deterministic=True)
                     if side == 0:
                         opp_action = opp.act(arena.env.p1, arena.env.p0, o1)
@@ -614,13 +735,17 @@ class NeuroTrainer:
                 clashes.append(int(info.get("clashes", 0)))
                 heads.append(int(info.get("head_hits", 0)))
                 subs.append(int(info.get("subs", 0)))
+        summary = summarise(outcomes, seed=0)
         return {
             "win": float(np.mean(outcomes)) if outcomes else 0.0,
+            "win_ci_low": summary["ci_low"],
+            "win_ci_high": summary["ci_high"],
             "frames": float(np.mean(frames)) if frames else 0.0,
             "clashes": float(np.mean(clashes)) if clashes else 0.0,
             "head_hits": float(np.mean(heads)) if heads else 0.0,
             "subs": float(np.mean(subs)) if subs else 0.0,
             "games": len(outcomes),
+            "outcomes": outcomes,
         }
 
     # --------------------------------------------------------------- training
@@ -634,23 +759,30 @@ class NeuroTrainer:
         """
         if self.world_model is None:
             return None
-        obs, actions, next_obs = [], [], []
+        obs, actions, next_obs, rewards = [], [], [], []
         for ep in episodes:
             for i, step in enumerate(ep.steps):
-                nxt = ep.steps[i + 1].obs if i + 1 < len(ep.steps) else ep.last_obs
-                if nxt is None:
-                    continue
-                obs.append(step.obs)
+                if i + 1 >= len(ep.steps):
+                    continue          # no real successor: skip instead of
+                                      # mixing a policy-space bootstrap state in
+                nxt = ep.steps[i + 1]
+                obs.append(step.raw_obs if step.raw_obs is not None else step.obs)
                 actions.append(step.action)
-                next_obs.append(nxt)
+                next_obs.append(nxt.raw_obs if nxt.raw_obs is not None else nxt.obs)
+                rewards.append(step.reward / max(self.args.reward_scale, 1e-9))
         if not obs:
             return None
+        extra = ({}
+                 if not isinstance(self.world_model, LatentWorldModel)
+                 else {"rewards": np.asarray(rewards, dtype=np.float64)})
         out = self.world_model.train(
             np.stack(obs), np.asarray(actions, dtype=np.int64), np.stack(next_obs),
-            self.rng, epochs=self.args.world_epochs,
+            self.rng, epochs=self.args.world_epochs, **extra,
         )
         if isinstance(out, dict):
-            self.recon_mse = float(out.get("recon_mse", 0.0))
+            self.recon_mse = (None if getattr(self.world_model,
+                                              "freeze_encoder", False)
+                              else float(out.get("recon_mse", 0.0)))
             return float(out.get("latent_mse", 0.0))
         self.recon_mse = None
         return out
@@ -665,7 +797,7 @@ class NeuroTrainer:
         return float(np.mean([self.agent.entropy_of(o) for o in obs[:128]]))
 
     def _frozen_self(self):
-        snap = PPOAgent(self.obs_dim, self.n_actions, hidden=self.args.hidden,
+        snap = PPOAgent(self.policy_dim, self.n_actions, hidden=self.args.hidden,
                         cfg=self.ppo_cfg, seed=0)
         snap.load_state_dict(self.agent.state_dict(), "agent")
         return snap
@@ -678,7 +810,7 @@ class NeuroTrainer:
         if self.pool is not None:
             name = "league%d" % self._snap_seq
             self._snap_seq += 1
-            entry = self.pool.add(name, lambda s=snap: SnapshotOpponent(s),
+            entry = self.pool.add(name, lambda s=snap: SnapshotOpponent(s, encode=self.encoder),
                                   origin="self")
             self._cap_pool_entry(entry)
 
@@ -710,10 +842,79 @@ class NeuroTrainer:
         self._cap_pool_entry(entry)
         return name
 
+    # --------------------------------------------------------------- imagine
+    def _imagine(self, episodes):
+        """Dyna-style rollout in latent space.
+
+        Real transitions update the world model; the model then generates extra
+        transitions the policy can learn from without touching the arena.  The
+        reward comes from the model's reward head, so the numbers are cheap but
+        *wrong* in a systematic way -- that is why they are weighted down and
+        kept to a couple of steps.
+        """
+        steps = 0
+        if (self.args.imagine_steps <= 0
+                or not isinstance(self.world_model, LatentWorldModel)):
+            return [], 0
+        starts = [s for ep in episodes for s in ep.steps if len(ep.steps) > 2]
+        if not starts:
+            return [], 0
+        n = min(len(starts), self.args.imagine_batch)
+        picks = self.rng.integers(0, len(starts), size=n)
+        ep = Episode()
+        for k in picks:
+            src = starts[int(k)]
+            raw = src.raw_obs if src.raw_obs is not None else src.obs
+            z = self.world_model.encode(raw)
+            for t in range(self.args.imagine_steps):
+                obs = z if self.encoder is not None else self.world_model.decode(z)
+                action, logp, value = self.agent.act(obs, self.rng)
+                z_next, r = self.world_model.step_latent(z, action)
+                ep.steps.append(Step(
+                    obs=np.asarray(obs, dtype=np.float32).copy(),
+                    action=action, logp=logp, value=value,
+                    reward=r * self.args.reward_scale * self.args.imagine_coef,
+                    done=False, raw_obs=None,
+                ))
+                z = z_next
+                steps += 1
+        if steps:
+            ep.last_obs = np.asarray(ep.steps[-1].obs, dtype=np.float32)
+        return [ep], steps
+
+    # ------------------------------------------------------------------- pbt
+    def _pbt_step(self, iteration: int):
+        """Score the population, keep winners, mutate survivors."""
+        games = max(2, self.args.pbt_games)
+        fitness = lambda m: self._evaluate(games, "holdout", agent=m)["win"]
+        champion, report = self.pbt.evolve(fitness)
+        report["pbt_adopted"] = False
+        if self.args.pbt_adopt:
+            current = self._evaluate(games, "holdout")["win"]
+            if report["pbt_best"] >= current + 0.02:
+                self.agent.load_state_dict(champion.state_dict(), "agent")
+                report["pbt_adopted"] = True
+        if self.pool is not None:
+            name = "pbt%d" % self._evo_seq
+            self._evo_seq += 1
+            snap = clone_agent(champion)
+            entry = self.pool.add(name, lambda s=snap: SnapshotOpponent(s, encode=self.encoder),
+                                  origin="evolved")
+            self._cap_pool_entry(entry)
+            report["pbt_opponent"] = name
+        self.pbt_stats = report
+        return report
+
     def train_iteration(self, iteration: int):
         self.ledger.start_iteration()
         with self.ledger.phase("collect"):
             episodes, stats = self._collect(self.args.episodes, iteration)
+        real_episodes = episodes
+        imagine_n = 0
+        if self.args.imagine_steps > 0:
+            with self.ledger.phase("imagine"):
+                imagined, imagine_n = self._imagine(episodes)
+                episodes = episodes + imagined
         with self.ledger.phase("ppo"):
             lr = self.lr_schedule.at(iteration)
             self.agent.policy_adam.lr = lr
@@ -733,7 +934,7 @@ class NeuroTrainer:
                 self.ema.update()
                 self.ema.copy_to([self.ema_agent.policy, self.ema_agent.value])
         with self.ledger.phase("world"):
-            world_mse = self._world_model_step(episodes)
+            world_mse = self._world_model_step(real_episodes)
         if world_mse is not None:
             self.world_mse_history.append(float(world_mse))
             self.world_mse_history = self.world_mse_history[-50:]
@@ -749,7 +950,7 @@ class NeuroTrainer:
                      if self.ema_agent is not None else None),
                 )
             holdout, random_eval, ema_eval = self._last_eval
-        entropy = self._entropy(episodes)
+        entropy = self._entropy(real_episodes)
 
         self.history.append(float(stats["win"]))
         self.history = self.history[-50:]
@@ -783,6 +984,11 @@ class NeuroTrainer:
                 self.pool.prune()
             pool_stats = self.pool.stats()
 
+        pbt_stats = None
+        if self.pbt is not None and (iteration + 1) % self.args.pbt_every == 0:
+            with self.ledger.phase("pbt"):
+                pbt_stats = self._pbt_step(iteration)
+
         rec = {
             "iter": iteration + 1,
             "episodes": self.args.episodes,
@@ -799,6 +1005,13 @@ class NeuroTrainer:
             "flying_hits": round(float(stats["flying_hits"]), 2),
             "act_hist": stats["act_hist"],
             "holdout_win": round(float(holdout["win"]), 4),
+            "holdout_ci_low": round(float(holdout["win_ci_low"]), 4),
+            "holdout_ci_high": round(float(holdout["win_ci_high"]), 4),
+            "holdout_outcomes": holdout["outcomes"],
+            "imagine_steps": int(imagine_n),
+            "surprise": round(float(self._surprise_sum), 3),
+            "policy_dim": int(self.policy_dim),
+            **(pbt_stats or {}),
             "holdout_frames": round(float(holdout["frames"]), 1),
             "random_win": round(float(random_eval["win"]), 4),
             "entropy": round(float(entropy), 4),
@@ -939,6 +1152,30 @@ def build_argparser():
     ap.add_argument("--pfsp-floor", type=float, default=0.10,
                     help="opponents below this win rate are down-weighted; "
                          "0 = classic PFSP, which collapses from a cold start")
+    ap.add_argument("--latent-policy", action="store_true",
+                    help="policy consumes the learned 8-D latent instead of the "
+                         "33 hand-crafted numbers (tests representation quality)")
+    ap.add_argument("--encoder-epochs", type=int, default=8,
+                    help="self-supervised warm-up epochs before freezing encoder")
+    ap.add_argument("--surprise-coef", type=float, default=0.0,
+                    help="curiosity bonus from latent prediction error; "
+                         "0 = off, 0.5 is a reasonable value")
+    ap.add_argument("--pbt", action="store_true",
+                    help="weight-space evolution: population, mutation, selection")
+    ap.add_argument("--pbt-size", type=int, default=6)
+    ap.add_argument("--pbt-sigma", type=float, default=0.03,
+                    help="relative weight noise, as a fraction of tensor std")
+    ap.add_argument("--pbt-every", type=int, default=4)
+    ap.add_argument("--pbt-games", type=int, default=4,
+                    help="games per member per generation (fixed seeds, paired)")
+    ap.add_argument("--pbt-adopt", action="store_true",
+                    help="replace the learner when the champion is clearly better")
+    ap.add_argument("--imagine-steps", type=int, default=0,
+                    help="latent rollout length per imagined start (0 = off)")
+    ap.add_argument("--imagine-batch", type=int, default=48,
+                    help="number of imagined starts per iteration")
+    ap.add_argument("--imagine-coef", type=float, default=0.5,
+                    help="down-weight for imagined rewards: the model is wrong")
     ap.add_argument("--pool-size", type=int, default=10)
     ap.add_argument("--evolve-every", type=int, default=1,
                     help="iterations between generated opponent candidates")

@@ -353,15 +353,38 @@ python domains/neuro/train.py --env freeform --entropy-coef 0.05 \
 python domains/neuro/train.py --env freeform --latent-world --latent-dim 8 \
     --entropy-coef 0.05 --iterations 8 --episodes 6 --out-dir runs/neuro_latent
 
+# 让策略直接吃学到的 8 维隐向量（而不是 33 维手工特征）
+python domains/neuro/train.py --env freeform --latent-policy --latent-dim 8 \
+    --iterations 15 --episodes 5 --out-dir runs/neuro_latent_policy
+
+# 好奇心（隐空间预测误差）当内在奖励
+python domains/neuro/train.py --env freeform --latent-policy --surprise-coef 1.0 \
+    --out-dir runs/neuro_curious
+
+# 世界模型想象训练（Dyna）：真实一步 + 模型滚两步
+python domains/neuro/train.py --env freeform --latent-world \
+    --imagine-steps 2 --imagine-batch 32 --out-dir runs/neuro_imagine
+
+# 权重空间进化（PBT）
+python domains/neuro/train.py --env freeform --pbt --pbt-size 4 --pbt-games 8 \
+    --pbt-every 3 --pbt-adopt --out-dir runs/neuro_pbt
+
+# 配对 A/B：同一批评估种子，逐 iteration 比较
+python tools/ab.py --a runs/exp_a --b runs/exp_b --metric holdout_win
+
 # 调整升级耐心 / 世界模型门控阈值
 python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015 \
     --out-dir runs/neuro_tuned
 ```
 
+评估结果的写法也变了：`metrics.jsonl` 现在每轮都带 `holdout_ci_low / holdout_ci_high`
+和逐局 `holdout_outcomes`。**8 局的标准误约 ±0.17**，比较两个 run 请用 `tools/ab.py`
+的配对区间，而不是比两个小数。
+
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 106 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本
+python -m unittest discover -s tests -v   # 128 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练
 ```
 
 ---
@@ -410,15 +433,18 @@ selfplay/
   core/    health.py    评估器健康判据
            curriculum.py 世界课程（health + world model 双门控）
            budget.py    算力账本：分段计时 + Elo/CPU 秒
+           stats.py     bootstrap 区间 / 配对差 / Wilson 区间（小样本专用）
            manifest.py  run 元信息
            recorder.py  metrics.jsonl / progress.tsv / resume 状态
 tools/     bench.py     单核微基准：环境步进 / 观测 / 前向
+           ab.py        配对 A/B：逐 iteration 差值 + 95% 区间
 tests/     test_neuro.py 神经栈的单元与回归测试
            test_limbs.py 肢体运动学、胶囊几何与接触规则测试
            test_freeform.py 跳跃/下蹲/低扫/飞踢与二维物理测试
            （含玩家模式的反应延迟与战报对账）
            test_llmstack.py LR 调度、EMA、拒绝采样、镜像增广、AdamW
            test_selfevolve.py 对手池、PFSP/progress 采样、基因变异、淘汰与池容量
+           test_stack.py  统计区间、配对差、PBT、隐空间奖励头、想象训练
            test_budget.py  Elo 换算与算力账本
 
 data/      前三域的进化轨迹（每 N 代抽样）+ 难度晋升历史 + 当前冠军

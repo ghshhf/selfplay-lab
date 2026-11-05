@@ -55,6 +55,8 @@ class LatentWorldModel:
         self.hidden = int(hidden)
         self.latent_dim = int(latent)
         self.recon_weight = float(recon_weight)
+        # When the policy consumes z, the encoder must not drift underneath it.
+        self.freeze_encoder = False
         rng = np.random.default_rng(seed)
         self.encoder = MLP([self.obs_dim, self.hidden, self.latent_dim],
                            activation="tanh", out_activation="identity",
@@ -66,9 +68,15 @@ class LatentWorldModel:
                               self.latent_dim],
                              activation="tanh", out_activation="identity",
                              rng=rng)
+        # A reward head turns the latent model into a usable simulator: roll
+        # the latent forward and you get both the next state and the reward.
+        self.reward_head = MLP([self.latent_dim + self.n_actions, self.hidden, 1],
+                               activation="tanh", out_activation="identity",
+                               rng=rng)
         self.enc_adam = Adam(self.encoder.params, lr=lr)
         self.dec_adam = Adam(self.decoder.params, lr=lr)
         self.pred_adam = Adam(self.predictor.params, lr=lr)
+        self.rew_adam = Adam(self.reward_head.params, lr=lr)
 
     # ------------------------------------------------------------------ helpers
     def _onehot(self, actions):
@@ -98,16 +106,30 @@ class LatentWorldModel:
         target = np.atleast_2d(target)
         return float(np.mean((pred - target) ** 2))
 
+    def step_latent(self, z, action: int) -> tuple[np.ndarray, float]:
+        """One imagined transition: (next latent, predicted reward)."""
+        feats = np.concatenate([np.atleast_1d(z), self._onehot([action])[0]])
+        z_next = self.predictor.forward(feats[None, :])[0]
+        r = float(self.reward_head.forward(feats[None, :])[0, 0])
+        return z_next, r
+
+    def decode(self, z):
+        return self.decoder.forward(np.atleast_1d(z))
+
     # -------------------------------------------------------------------- train
     def train(self, obs, actions, next_obs, rng: np.random.Generator,
-              epochs: int = 2, batch_size: int = 128) -> dict:
+              epochs: int = 2, batch_size: int = 128,
+              rewards=None) -> dict:
         obs = np.asarray(obs, dtype=DTYPE)
         nxt = np.asarray(next_obs, dtype=DTYPE)
         onehot = self._onehot(actions)
+        has_reward = rewards is not None and len(rewards) == len(obs)
+        if has_reward:
+            rew = np.asarray(rewards, dtype=DTYPE).reshape(-1, 1)
         n = len(obs)
         if n == 0:
-            return {"latent_mse": 0.0, "recon_mse": 0.0}
-        stats = {"latent_mse": [], "recon_mse": []}
+            return {"latent_mse": 0.0, "recon_mse": 0.0, "reward_mse": 0.0}
+        stats = {"latent_mse": [], "recon_mse": [], "reward_mse": []}
         for _ in range(epochs):
             order = rng.permutation(n)
             for start in range(0, n, batch_size):
@@ -117,15 +139,16 @@ class LatentWorldModel:
                 ob, nb, oh = obs[idx], nxt[idx], onehot[idx]
 
                 # Autoencoder step: reconstruction keeps the bottleneck honest.
-                z = self.encoder.forward(ob)
-                rec = self.decoder.forward(z)
-                residual = rec - nb
-                stats["recon_mse"].append(float(np.mean(residual * residual)))
-                d_rec = (2.0 * self.recon_weight * residual / len(idx)).astype(DTYPE)
-                dec_grads, d_z = _backward_with_input(self.decoder, d_rec)
-                self.dec_adam.step(dec_grads, max_norm=1.0)
-                enc_grads, _ = _backward_with_input(self.encoder, d_z)
-                self.enc_adam.step(enc_grads, max_norm=1.0)
+                if not self.freeze_encoder:
+                    z = self.encoder.forward(ob)
+                    rec = self.decoder.forward(z)
+                    residual = rec - nb
+                    stats["recon_mse"].append(float(np.mean(residual * residual)))
+                    d_rec = (2.0 * self.recon_weight * residual / len(idx)).astype(DTYPE)
+                    dec_grads, d_z = _backward_with_input(self.decoder, d_rec)
+                    self.dec_adam.step(dec_grads, max_norm=1.0)
+                    enc_grads, _ = _backward_with_input(self.encoder, d_z)
+                    self.enc_adam.step(enc_grads, max_norm=1.0)
 
                 # Prediction step: target is the encoder, treated as constant.
                 z_t = self.encoder.forward(ob)
@@ -137,6 +160,14 @@ class LatentWorldModel:
                 pred_grads = self.predictor.backward(
                     (2.0 * perr / len(idx)).astype(DTYPE))
                 self.pred_adam.step(pred_grads, max_norm=1.0)
+
+                if has_reward:
+                    r_pred = self.reward_head.forward(feats)
+                    r_err = r_pred - rew[idx]
+                    stats["reward_mse"].append(float(np.mean(r_err * r_err)))
+                    r_grads = self.reward_head.backward(
+                        (2.0 * r_err / len(idx)).astype(DTYPE))
+                    self.rew_adam.step(r_grads, max_norm=1.0)
         return {k: float(np.mean(v)) if v else 0.0 for k, v in stats.items()}
 
     # -------------------------------------------------------------- persistence
@@ -144,9 +175,11 @@ class LatentWorldModel:
         out = self.encoder.state_dict(prefix + "_enc")
         out.update(self.decoder.state_dict(prefix + "_dec"))
         out.update(self.predictor.state_dict(prefix + "_pred"))
+        out.update(self.reward_head.state_dict(prefix + "_rew"))
         out.update(self.enc_adam.state_dict(prefix + "_enc_adam"))
         out.update(self.dec_adam.state_dict(prefix + "_dec_adam"))
         out.update(self.pred_adam.state_dict(prefix + "_pred_adam"))
+        out.update(self.rew_adam.state_dict(prefix + "_rew_adam"))
         out[prefix + "__meta"] = np.asarray(
             [self.obs_dim, self.n_actions, self.hidden, self.latent_dim],
             dtype=np.int64)
@@ -160,6 +193,8 @@ class LatentWorldModel:
         self.encoder.load_state_dict(state, prefix + "_enc")
         self.decoder.load_state_dict(state, prefix + "_dec")
         self.predictor.load_state_dict(state, prefix + "_pred")
+        self.reward_head.load_state_dict(state, prefix + "_rew")
         self.enc_adam.load_state_dict(state, prefix + "_enc_adam")
         self.dec_adam.load_state_dict(state, prefix + "_dec_adam")
         self.pred_adam.load_state_dict(state, prefix + "_pred_adam")
+        self.rew_adam.load_state_dict(state, prefix + "_rew_adam")
