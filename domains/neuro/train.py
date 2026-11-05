@@ -51,6 +51,7 @@ try:
     from .opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
                             SCRIPTED_GENES, ScriptedOpponent,
                             SnapshotOpponent, heuristic_action)
+    from .selfevolve import SelfPlayPool, mutate_gene, random_gene  # noqa: E402
 except ImportError:  # running as a script: python domains/neuro/train.py
     from env import (ACTION_NAMES, ARTICULATED_OBS_DIM, ArticulatedArena,
                      FREEFORM_ACTION_NAMES, FREEFORM_N_ACTIONS,
@@ -59,6 +60,22 @@ except ImportError:  # running as a script: python domains/neuro/train.py
     from opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
                            SCRIPTED_GENES, ScriptedOpponent,
                            SnapshotOpponent, heuristic_action)
+    from selfevolve import SelfPlayPool, mutate_gene, random_gene  # noqa: E402
+
+
+def _apply_selfevolve(args):
+    """Zero-data mode: no demos, no authored ladder, no KL anchor.
+
+    Runs before the LLM preset, so the values set here are explicit and the
+    preset will not overwrite them.
+    """
+    if getattr(args, "selfevolve", False):
+        if args.bc_episodes is None:
+            args.bc_episodes = 0
+        if args.kl_coef is None:
+            args.kl_coef = 0.0
+    elif args.bc_episodes is None:
+        args.bc_episodes = 8
 
 
 def _apply_llm_stack(args):
@@ -95,6 +112,7 @@ def _apply_llm_stack(args):
 
 class NeuroTrainer:
     def __init__(self, args: argparse.Namespace):
+        _apply_selfevolve(args)
         _apply_llm_stack(args)
         self.args = args
         self.out_dir = Path(args.out_dir)
@@ -182,6 +200,24 @@ class NeuroTrainer:
                     if args.rft_frac > 0 else None)
         self.rft_loss = None
 
+        # ---- self-evolution: the agent's own opponent pool ----
+        self.pool = None
+        self._snap_seq = 0
+        self._evo_seq = 0
+        self._loaded_pool_state = None
+        if args.selfevolve:
+            self.pool = SelfPlayPool(beta=args.pfsp_beta,
+                                     max_size=args.pool_size,
+                                     competence_floor=args.pfsp_floor)
+            self.pool.add("random",
+                          lambda: RandomOpponent(n_actions=self.n_actions),
+                          origin="random")
+            # A frozen copy of the untrained policy is the seed opponent.
+            # Self-play can start from it without any authored curriculum.
+            seed = self._frozen_self()
+            self.pool.add("self0", lambda s=seed: SnapshotOpponent(s),
+                          origin="self")
+
         if args.resume:
             self._load_state()
         elif args.bc_episodes > 0:
@@ -199,6 +235,16 @@ class NeuroTrainer:
             self.ref_agent.policy.copy_from(self.agent.policy)
         if self.ema is not None and self.ema.updates == 0:
             self.ema.update()
+
+        if self.pool is not None:
+            # Rebuild the frozen-self entries that came back with the league.
+            self._snap_seq = len(self.league)
+            for i, snap in enumerate(self.league):
+                name = "league%d" % i
+                if self.pool.get(name) is None:
+                    self.pool.add(name, lambda s=snap: SnapshotOpponent(s),
+                                  origin="self")
+            self.pool.load_stats(self._loaded_pool_state)
 
     # --------------------------------------------------------------- manifest
     def _prepare_manifest(self):
@@ -246,6 +292,9 @@ class NeuroTrainer:
             "ema_updates": 0 if self.ema is None else self.ema.updates,
             "rft_loss": self.rft_loss,
             "rft_size": 0 if self.rft is None else len(self.rft),
+            "pool": None if self.pool is None else self.pool.state_dict(),
+            "snap_seq": self._snap_seq,
+            "evo_seq": self._evo_seq,
         }
         self.recorder.save_state(state, self._arrays())
 
@@ -260,6 +309,8 @@ class NeuroTrainer:
         self.world_mse_history = list(state.get("world_mse_history", []))
         self.best_holdout = float(state.get("best_holdout", -1.0))
         self.bc_loss = state.get("bc_loss")
+        self._loaded_pool_state = state.get("pool")
+        self._evo_seq = int(state.get("evo_seq", 0))
         cur_state = state.get("curriculum")
         if self.curriculum is not None and cur_state:
             self.curriculum.load_state_dict(cur_state)
@@ -388,17 +439,22 @@ class NeuroTrainer:
         return SCRIPTED_GENES[1]
 
     def _sample_opponent(self, iteration: int, k: int):
+        if self.pool is not None:
+            if iteration < self.args.warmup:
+                return "random", RandomOpponent(n_actions=self.n_actions)
+            entry = self.pool.sample(self.rng, mode=self.args.pfsp_mode)
+            return entry.name, entry.make()
         if iteration < self.args.warmup:
-            return RandomOpponent(n_actions=self.n_actions)
+            return "random", RandomOpponent(n_actions=self.n_actions)
         r = float(self.rng.random())
         if self.league and r < 0.45:
             idx = int(self.rng.integers(len(self.league)))
-            return SnapshotOpponent(self.league[idx])
+            return "league", SnapshotOpponent(self.league[idx])
         if r < 0.80:
             pool = self._scripted_pool()
             gene = pool[int(self.rng.integers(len(pool)))]
-            return ScriptedOpponent(gene, reach_scale=self.reach_scale)
-        return RandomOpponent(n_actions=self.n_actions)
+            return "scripted", ScriptedOpponent(gene, reach_scale=self.reach_scale)
+        return "random", RandomOpponent(n_actions=self.n_actions)
 
     # --------------------------------------------------------------- episodes
     def _play(self, opponent, seed: int, collect: bool):
@@ -471,10 +527,12 @@ class NeuroTrainer:
         subs = []
         avoided = []
         for k in range(n):
-            opp = self._sample_opponent(iteration, k)
+            name, opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
             opp.reset(int(self.rng.integers(2 ** 31)))
             ep, stat = self._play(opp, seed, collect=True)
+            if self.pool is not None:
+                self.pool.record(name, stat["outcome"])
             episodes.append(ep)
             outcomes.append(stat["outcome"])
             frames.append(stat["frames"])
@@ -606,13 +664,51 @@ class NeuroTrainer:
             return 0.0
         return float(np.mean([self.agent.entropy_of(o) for o in obs[:128]]))
 
-    def _snapshot(self):
+    def _frozen_self(self):
         snap = PPOAgent(self.obs_dim, self.n_actions, hidden=self.args.hidden,
                         cfg=self.ppo_cfg, seed=0)
         snap.load_state_dict(self.agent.state_dict(), "agent")
+        return snap
+
+    def _snapshot(self):
+        snap = self._frozen_self()
         self.league.append(snap)
         if len(self.league) > self.args.league_size:
             self.league.pop(0)
+        if self.pool is not None:
+            name = "league%d" % self._snap_seq
+            self._snap_seq += 1
+            entry = self.pool.add(name, lambda s=snap: SnapshotOpponent(s),
+                                  origin="self")
+            self._cap_pool_entry(entry)
+
+    def _cap_pool_entry(self, entry):
+        """Keep the pool bounded without ever evicting the random anchor."""
+        if self.pool is None or len(self.pool) <= self.args.pool_size:
+            return
+        victim = next((e for e in self.pool.entries
+                       if e.origin == "evolved"), None)
+        if victim is None:
+            victim = next((e for e in self.pool.entries
+                           if e.origin == "self" and e is not entry), None)
+        if victim is not None:
+            self.pool.remove(victim.name)
+
+    def _spawn_candidate(self):
+        """Mutate the frontier's gene: the agent writes its own next lesson."""
+        frontier = self.pool.frontier()
+        if frontier is not None and frontier.gene is not None:
+            gene = mutate_gene(frontier.gene, self.rng, self.args.evolve_sigma)
+        else:
+            gene = random_gene(self.rng)
+        name = "evo%d" % self._evo_seq
+        self._evo_seq += 1
+        entry = self.pool.add(
+            name,
+            lambda g=gene: ScriptedOpponent(g, reach_scale=self.reach_scale),
+            gene=gene, origin="evolved")
+        self._cap_pool_entry(entry)
+        return name
 
     def train_iteration(self, iteration: int):
         self.ledger.start_iteration()
@@ -679,6 +775,14 @@ class NeuroTrainer:
             with self.ledger.phase("snapshot"):
                 self._snapshot()
 
+        pool_stats = None
+        if self.pool is not None:
+            with self.ledger.phase("evolve"):
+                if (iteration + 1) % self.args.evolve_every == 0:
+                    self._spawn_candidate()
+                self.pool.prune()
+            pool_stats = self.pool.stats()
+
         rec = {
             "iter": iteration + 1,
             "episodes": self.args.episodes,
@@ -720,6 +824,7 @@ class NeuroTrainer:
             "param_norm": round(float(self.agent.param_norm()), 4),
             "bc_loss": self.bc_loss,
             "league_size": len(self.league),
+            **(pool_stats or {}),
             "curriculum_level": None if self.curriculum is None else self.curriculum.level,
             "curriculum_name": None if self.curriculum is None else self.curriculum.level_name,
             "curriculum_action": None if curriculum_step is None else curriculum_step["action"],
@@ -789,7 +894,9 @@ def build_argparser():
     ap.add_argument("--health-window", type=int, default=10)
     ap.add_argument("--train-gap", type=float, default=2.2)
     ap.add_argument("--eval-gap", type=float, default=2.2)
-    ap.add_argument("--bc-episodes", type=int, default=8)
+    ap.add_argument("--bc-episodes", type=int, default=None,
+                    help="scripted-expert episodes used for BC warm-up "
+                         "(default 8; 0 disables demos entirely)")
     ap.add_argument("--bc-epochs", type=int, default=60)
     ap.add_argument("--bc-lr", type=float, default=1e-3)
     ap.add_argument("--curriculum", action="store_true", default=True)
@@ -820,6 +927,23 @@ def build_argparser():
     ap.add_argument("--rft-epochs", type=int, default=None)
     ap.add_argument("--rft-lr", type=float, default=3e-4)
     ap.add_argument("--rft-buffer", type=int, default=20000)
+    ap.add_argument("--selfevolve", action="store_true",
+                    help="zero-data self-evolution: no BC demos, no authored "
+                         "ladder; opponents come from self snapshots and "
+                         "mutated genes, sampled by win-rate band")
+    ap.add_argument("--pfsp-mode", choices=("pfsp", "progress", "uniform"),
+                    default="pfsp",
+                    help="how the self-play pool picks the next opponent")
+    ap.add_argument("--pfsp-beta", type=float, default=2.0,
+                    help="PFSP sharpening: weight ∝ (1 - win)^beta")
+    ap.add_argument("--pfsp-floor", type=float, default=0.10,
+                    help="opponents below this win rate are down-weighted; "
+                         "0 = classic PFSP, which collapses from a cold start")
+    ap.add_argument("--pool-size", type=int, default=10)
+    ap.add_argument("--evolve-every", type=int, default=1,
+                    help="iterations between generated opponent candidates")
+    ap.add_argument("--evolve-sigma", type=float, default=0.20,
+                    help="gene mutation size, in fraction of each gene's span")
     ap.add_argument("--mirror-bc", action="store_true",
                     help="left/right mirror augmentation for the BC demos")
     ap.add_argument("--holdout-level", type=int, default=-1,

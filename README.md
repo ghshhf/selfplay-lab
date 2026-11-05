@@ -186,6 +186,32 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 实测（freeform，困难 holdout，8 seeds）：**优化器四件套 +7 个百分点，而 KL 锚 + 拒绝采样把胜率打回 -24 个百分点**——
 因为这两项会把策略磨尖、把熵压回噪声底，正好杀掉这个环境需要的探索。见 FINDINGS 第十五节。
 
+#### 零数据自进化（`domains/neuro/selfevolve.py`）
+
+`--selfevolve` 把外部数据全部撤掉：没有 BC 示范、没有手写对手阶梯、没有 KL 先验。
+剩下的东西由智能体自己长出来：
+
+```bash
+python domains/neuro/train.py --env freeform --selfevolve \
+    --iterations 45 --episodes 6 --max-frames 420 --out-dir runs/selfevo
+```
+
+| 机制 | 做法 |
+|---|---|
+| 对手池 | `random` + 每轮的自己快照 `leagueN` + 变异基因 `evoN`，**没有一个是对手设计师写的** |
+| 胜负统计 | 每个对手一条 EMA 胜率（α=0.25），只有 `record()` 会更新，废弃对手无法污染统计 |
+| 选谁打 | `--pfsp-mode pfsp`：权重 ∝ `(1−win)^β`；`progress`：权重 ∝ |Δwin|；`uniform`：对照 |
+| 冷启动保护 | `--pfsp-floor`：从没赢过的对手权重 ×0.15，否则新手会被最难的敌人淹没 |
+| 自造课程 | 每轮挑"胜率最接近 50%"的那个对手，变异它的基因（`--evolve-sigma`），保底随机基因 |
+| 淘汰 | 连打 8 局胜率 ≤0.02 的对手退役；池子不超过 `--pool-size` |
+| 指标 | `pool_size` / `pool_frontier` / `pool_frontier_win` / `pool_hardest` / `pool_games` |
+
+实测（freeform，45 轮，每轮 6 局，各 2 seeds）：**20 轮以内 uniform 更稳，45 轮之后 PFSP 反超**
+（PFSP 0.71 / 0.92，uniform 0.00 / 0.29）。原因不是采样器谁更好，而是 PFSP 的前提"你至少能赢一部分"
+在冷启动时不成立——前 36 轮它把帧全给了打不过的对手，第 40 轮左右才真正开始进步。
+**结论：零数据能学，但学得慢、方差大**；这套机制解决的是"不用人给数据"，不是"少算力"。
+见 FINDINGS 第十六节。
+
 #### 自己上手打（`domains/duel/play.py`）
 
 同一个 freeform 环境，左边那个小人交给你：
@@ -335,7 +361,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 87 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、LLM 训练栈、算力账本
+python -m unittest discover -s tests -v   # 106 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本
 ```
 
 ---
@@ -374,6 +400,7 @@ domains/
   neuro/   env.py       把 duel / articulated / freeform 包装成 15 / 23 / 33 维观测、6 / 9 动作的环境
            opponents.py random / scripted / 冻结快照 对手池 + BC 专家
            train.py     BC 预热 + PPO + league + 世界模型 + health + resume
+           selfevolve.py 零数据自进化：对手池、胜率 EMA、PFSP / 学习进度采样、基因变异
 selfplay/
   nn/      mlp.py       MLP + Adam/AdamW + 手写反向传播
            ppo.py       离散动作 PPO（GAE / clip / entropy / KL 锚）
@@ -391,6 +418,7 @@ tests/     test_neuro.py 神经栈的单元与回归测试
            test_freeform.py 跳跃/下蹲/低扫/飞踢与二维物理测试
            （含玩家模式的反应延迟与战报对账）
            test_llmstack.py LR 调度、EMA、拒绝采样、镜像增广、AdamW
+           test_selfevolve.py 对手池、PFSP/progress 采样、基因变异、淘汰与池容量
            test_budget.py  Elo 换算与算力账本
 
 data/      前三域的进化轨迹（每 N 代抽样）+ 难度晋升历史 + 当前冠军
