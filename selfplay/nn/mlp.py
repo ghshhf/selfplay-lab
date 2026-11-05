@@ -37,14 +37,16 @@ def _activation_grad(a: np.ndarray, name: str) -> np.ndarray:
 
 
 class Adam:
-    """Adam with optional global-norm gradient clipping."""
+    """Adam with optional decoupled weight decay (AdamW) and norm clipping."""
 
-    def __init__(self, params, lr=3e-4, beta1=0.9, beta2=0.999, eps=1e-8):
+    def __init__(self, params, lr=3e-4, beta1=0.9, beta2=0.999, eps=1e-8,
+                 weight_decay=0.0):
         self.params = params
         self.lr = float(lr)
         self.beta1 = float(beta1)
         self.beta2 = float(beta2)
         self.eps = float(eps)
+        self.weight_decay = float(weight_decay)
         self.t = 0
         self.m = [[np.zeros_like(p) for p in layer] for layer in params]
         self.v = [[np.zeros_like(p) for p in layer] for layer in params]
@@ -66,6 +68,11 @@ class Adam:
                 mhat = self.m[i][j] / (1.0 - self.beta1 ** self.t)
                 vhat = self.v[i][j] / (1.0 - self.beta2 ** self.t)
                 p -= lr * mhat / (np.sqrt(vhat) + self.eps)
+                if self.weight_decay and j == 0:
+                    # Decoupled: shrink the weight matrix towards zero,
+                    # independent of the gradient moments.  Biases (j == 1)
+                    # are left alone, the usual transformer convention.
+                    p -= lr * self.weight_decay * p
 
     def state_dict(self, prefix="adam"):
         out = {prefix + "__t": np.array([self.t], dtype=np.int64)}

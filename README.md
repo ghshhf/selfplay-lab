@@ -168,6 +168,24 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 `metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `subs` / `sub_avoided` / `act_hist`（策略实际按键分布），
 用来区分"新动作可用"和"策略真的在用"。实测见 FINDINGS 第十一、十四节。
 
+#### LLM 训练栈（`selfplay/nn/llmstack.py`）
+
+一条 `--llm-stack` 把所有"大模型默认做法"叠上来，每项也能单独关掉做消融：
+
+| 开关 | 对应的大模型做法 | 在这里做什么 |
+|---|---|---|
+| AdamW (`--weight-decay`) | 解耦权重衰减 | 只衰减权重矩阵，不碰 bias |
+| `--lr-warmup` + `--lr-min-ratio` | warmup + cosine | 前几轮线性升温，再余弦退火到 10% |
+| `--kl-coef` | RLHF 的 KL 锚 | 每一步付 `β·KL(π‖π_BC)`，不许为了奖励跑离先验太远 |
+| `--ema-decay` | 模型汤 / EMA | 影子权重，单独评测，指标是 `ema_win` |
+| `--rft-frac` | 拒绝采样微调（STaR/RFT） | 每轮留收益最高的 25% 轨迹，再做 1 个 epoch 监督学习 |
+| `--mirror-bc` | 数据增广 | 左右镜像 BC 示范，免费翻倍（场地对称、动作是"朝对手"的相对语义） |
+| `--entropy-final` | 采样温度退火 | 熵系数线性降到终值 |
+
+`--holdout-level N` 把评估对手钉死在 `CURRICULUM_LEVELS[N]`，避免课程在训练中途换敌人导致 A/B 不可比。
+实测（freeform，困难 holdout，8 seeds）：**优化器四件套 +7 个百分点，而 KL 锚 + 拒绝采样把胜率打回 -24 个百分点**——
+因为这两项会把策略磨尖、把熵压回噪声底，正好杀掉这个环境需要的探索。见 FINDINGS 第十五节。
+
 #### 自己上手打（`domains/duel/play.py`）
 
 同一个 freeform 环境，左边那个小人交给你：
@@ -317,7 +335,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 73 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、算力账本
+python -m unittest discover -s tests -v   # 87 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、LLM 训练栈、算力账本
 ```
 
 ---
@@ -334,8 +352,8 @@ domains/
   duel/    duel.py      物理与规则（纯 numpy）
            limbs.py     2D 矢状面肢体运动学 + 胶囊碰撞几何
            articulated.py 肢体接触版对局（23 维观测、clash、部位伤害）
-           freeform.py    自由二维版：加竖直轴、跳跃/下蹲（29 维观测、8 动作）
-           play.py       玩家模式：键盘操控 / 延迟玩家 vs 神经策略
+           freeform.py    自由二维版：加竖直轴、跳跃/下蹲/替身（33 维观测、9 动作）
+           play.py        玩家模式：键盘操控 / 延迟玩家 vs 神经策略
            bot.py       基因 → 策略
            evolve.py    进化主循环（含 Elo 与名人堂）
            verify.py    规则自检
@@ -353,13 +371,15 @@ domains/
            diag.py      单局诊断（逐手看命中哪道闸门）
            results/     成果：逐局记录、训练日志、两个关键权重、A/B 原始记录
            logs/        遗传搜索版（路线 A）的历史运行日志
-  neuro/   env.py       把 duel / articulated / freeform 包装成 15 / 23 / 29 维观测、6 / 8 动作的环境
+  neuro/   env.py       把 duel / articulated / freeform 包装成 15 / 23 / 33 维观测、6 / 9 动作的环境
            opponents.py random / scripted / 冻结快照 对手池 + BC 专家
            train.py     BC 预热 + PPO + league + 世界模型 + health + resume
 selfplay/
-  nn/      mlp.py       MLP + Adam + 手写反向传播
-           ppo.py       离散动作 PPO（GAE / clip / entropy）
+  nn/      mlp.py       MLP + Adam/AdamW + 手写反向传播
+           ppo.py       离散动作 PPO（GAE / clip / entropy / KL 锚）
            world_model.py  one-step 观测预测模型
+           latent.py    8 维隐空间世界模型（encoder/predictor/decoder）
+           llmstack.py  LR 调度、EMA、拒绝采样、镜像增广
   core/    health.py    评估器健康判据
            curriculum.py 世界课程（health + world model 双门控）
            budget.py    算力账本：分段计时 + Elo/CPU 秒
@@ -370,6 +390,7 @@ tests/     test_neuro.py 神经栈的单元与回归测试
            test_limbs.py 肢体运动学、胶囊几何与接触规则测试
            test_freeform.py 跳跃/下蹲/低扫/飞踢与二维物理测试
            （含玩家模式的反应延迟与战报对账）
+           test_llmstack.py LR 调度、EMA、拒绝采样、镜像增广、AdamW
            test_budget.py  Elo 换算与算力账本
 
 data/      前三域的进化轨迹（每 N 代抽样）+ 难度晋升历史 + 当前冠军

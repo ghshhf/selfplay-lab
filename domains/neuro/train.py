@@ -39,6 +39,8 @@ from selfplay.core.recorder import RunRecorder  # noqa: E402
 from selfplay.nn.ppo import (Episode, PPOAgent, PPOConfig, Step,  # noqa: E402
                              log_softmax)
 from selfplay.nn.latent import LatentWorldModel  # noqa: E402
+from selfplay.nn.llmstack import (EMA, EntropySchedule, LRSchedule,  # noqa: E402
+                                  RejectionBuffer, mirror_batch)
 from selfplay.nn.world_model import WorldModel  # noqa: E402
 
 try:
@@ -59,8 +61,41 @@ except ImportError:  # running as a script: python domains/neuro/train.py
                            SnapshotOpponent, heuristic_action)
 
 
+def _apply_llm_stack(args):
+    """Turn on the whole LLM training recipe with one flag.
+
+    Every knob defaults to ``None`` so an explicit ``0`` means "off" rather
+    than "unspecified".  That is what makes ablation runs trustworthy -- a
+    preset must never silently override ``--kl-coef 0``.
+    """
+    preset = {
+        "weight_decay": 0.01,
+        "kl_coef": 0.02,
+        "lr_warmup": min(3, max(1, args.iterations // 4)),
+        "lr_min_ratio": 0.1,
+        "ema_decay": 0.9,
+        "rft_frac": 0.25,
+        "rft_epochs": 1,
+        "entropy_final": args.entropy_coef * 0.3,
+    }
+    off = {"weight_decay": 0.0, "kl_coef": 0.0, "lr_warmup": 0,
+           "lr_min_ratio": 1.0, "ema_decay": 0.0, "rft_frac": 0.0,
+           "rft_epochs": 0, "entropy_final": None}
+    if getattr(args, "llm_stack", False):
+        preset["mirror_bc"] = True
+    for name, value in (preset if args.llm_stack else {}).items():
+        if getattr(args, name, None) is None:
+            setattr(args, name, value)
+    for name, value in off.items():
+        if getattr(args, name, None) is None:
+            setattr(args, name, value)
+    if args.llm_stack and not args.mirror_bc:
+        args.mirror_bc = True
+
+
 class NeuroTrainer:
     def __init__(self, args: argparse.Namespace):
+        _apply_llm_stack(args)
         self.args = args
         self.out_dir = Path(args.out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -88,6 +123,7 @@ class NeuroTrainer:
             epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
             entropy_coef=args.entropy_coef, value_coef=args.value_coef,
             max_grad_norm=args.max_grad_norm,
+            weight_decay=args.weight_decay, kl_coef=args.kl_coef,
         )
         self.agent = PPOAgent(self.obs_dim, self.n_actions, hidden=args.hidden,
                               cfg=self.ppo_cfg, seed=args.seed)
@@ -126,6 +162,26 @@ class NeuroTrainer:
 
         self.recorder = RunRecorder(self.out_dir, resume=args.resume)
         self._prepare_manifest()
+
+        # ---- LLM-style training stack (all optional, all measurable) ----
+        self.lr_schedule = LRSchedule(args.lr, args.lr_warmup,
+                                      args.iterations, args.lr_min_ratio)
+        self.entropy_schedule = EntropySchedule(
+            args.entropy_coef, args.entropy_final, args.iterations)
+        self.ref_agent = None
+        if args.ema_decay > 0:
+            self.ema = EMA([self.agent.policy, self.agent.value],
+                           decay=args.ema_decay)
+            self.ema_agent = PPOAgent(self.obs_dim, self.n_actions,
+                                      hidden=args.hidden, cfg=self.ppo_cfg,
+                                      seed=0)
+        else:
+            self.ema = None
+            self.ema_agent = None
+        self.rft = (RejectionBuffer(self.obs_dim, max_steps=args.rft_buffer)
+                    if args.rft_frac > 0 else None)
+        self.rft_loss = None
+
         if args.resume:
             self._load_state()
         elif args.bc_episodes > 0:
@@ -133,6 +189,16 @@ class NeuroTrainer:
             # then fine-tunes it, instead of asking a randomly initialised
             # network to discover "walk close, then kick" from sparse rewards.
             self.bc_loss = self._behavior_clone()
+
+        # The RLHF anchor is the behaviour-cloned policy, frozen before any
+        # PPO update.  It has to be created after BC / checkpoint loading.
+        if args.kl_coef > 0:
+            self.ref_agent = PPOAgent(self.obs_dim, self.n_actions,
+                                      hidden=args.hidden, cfg=self.ppo_cfg,
+                                      seed=0)
+            self.ref_agent.policy.copy_from(self.agent.policy)
+        if self.ema is not None and self.ema.updates == 0:
+            self.ema.update()
 
     # --------------------------------------------------------------- manifest
     def _prepare_manifest(self):
@@ -157,6 +223,8 @@ class NeuroTrainer:
         arrays = dict(self.agent.state_dict("agent"))
         if self.world_model is not None:
             arrays.update(self.world_model.state_dict("world"))
+        if self.ema is not None:
+            arrays.update(self.ema.state_dict("ema"))
         for i, snap in enumerate(self.league):
             arrays.update(snap.state_dict("league%d" % i))
         return arrays
@@ -175,6 +243,9 @@ class NeuroTrainer:
             "league_size": len(self.league),
             "curriculum": self.curriculum.state_dict() if self.curriculum else None,
             "budget": self.ledger.state_dict(),
+            "ema_updates": 0 if self.ema is None else self.ema.updates,
+            "rft_loss": self.rft_loss,
+            "rft_size": 0 if self.rft is None else len(self.rft),
         }
         self.recorder.save_state(state, self._arrays())
 
@@ -199,6 +270,10 @@ class NeuroTrainer:
         self.agent.load_state_dict(arrays, "agent")
         if self.world_model is not None and "world__meta" in arrays:
             self.world_model.load_state_dict(arrays, "world")
+        if self.ema is not None and "ema__updates" in arrays:
+            self.ema.load_state_dict(arrays, "ema")
+            self.ema.copy_to([self.ema_agent.policy, self.ema_agent.value])
+        self.rft_loss = state.get("rft_loss")
 
         self.league = []
         i = 0
@@ -254,6 +329,12 @@ class NeuroTrainer:
             return None
         x = np.stack(obs).astype(np.float32)
         y = np.asarray(acts, dtype=np.int64)
+        if self.args.mirror_bc:
+            # Mirror augmentation: the arena is left/right symmetric and the
+            # actions are opponent-relative, so the reflected state is a
+            # second, equally valid demonstration at zero environment cost.
+            x = np.concatenate([x, mirror_batch(x, self.obs_dim)])
+            y = np.concatenate([y, y])
         if self.n_actions > N_ACTIONS:
             # The scripted expert only knows the original six buttons.  Without
             # this, JUMP / DUCK / low kicks would start with logits near -inf
@@ -265,25 +346,31 @@ class NeuroTrainer:
         onehot_cache = np.eye(self.agent.n_actions, dtype=np.float64)
         epoch_loss = 0.0
         for _epoch in range(self.args.bc_epochs):
-            order = self.rng.permutation(len(x))
-            batch_losses = []
-            for start in range(0, len(x), self.args.batch_size):
-                idx = order[start:start + self.args.batch_size]
-                if len(idx) < 2:
-                    continue
-                xb, yb = x[idx], y[idx]
-                bsz = len(idx)
-                logits = self.agent.policy.forward(xb)
-                lp = log_softmax(logits)
-                p = np.exp(lp)
-                batch_losses.append(-float(np.mean(lp[np.arange(bsz), yb])))
-                dlogits = (p - onehot_cache[yb]) / bsz
-                grads = self.agent.policy.backward(dlogits.astype(np.float32))
-                self.agent.policy_adam.step(grads, lr=self.args.bc_lr,
-                                            max_norm=self.args.max_grad_norm)
-            if batch_losses:
-                epoch_loss = float(np.mean(batch_losses))
+            epoch_loss = self._fit_policy(x, y, onehot_cache,
+                                          lr=self.args.bc_lr)
         return round(epoch_loss, 4)
+
+    def _fit_policy(self, x, y, onehot_cache=None, lr=1e-3):
+        """One epoch of supervised updates on (state, action) pairs."""
+        if onehot_cache is None:
+            onehot_cache = np.eye(self.agent.n_actions, dtype=np.float64)
+        order = self.rng.permutation(len(x))
+        batch_losses = []
+        for start in range(0, len(x), self.args.batch_size):
+            idx = order[start:start + self.args.batch_size]
+            if len(idx) < 2:
+                continue
+            xb, yb = x[idx], y[idx]
+            bsz = len(idx)
+            logits = self.agent.policy.forward(xb)
+            lp = log_softmax(logits)
+            p = np.exp(lp)
+            batch_losses.append(-float(np.mean(lp[np.arange(bsz), yb])))
+            dlogits = (p - onehot_cache[yb]) / bsz
+            grads = self.agent.policy.backward(dlogits.astype(np.float32))
+            self.agent.policy_adam.step(grads, lr=lr,
+                                        max_norm=self.args.max_grad_norm)
+        return float(np.mean(batch_losses)) if batch_losses else 0.0
 
     # ------------------------------------------------------------- opponents
     def _scripted_pool(self):
@@ -292,6 +379,10 @@ class NeuroTrainer:
         return SCRIPTED_GENES
 
     def _holdout_gene(self):
+        if self.args.holdout_level >= 0:
+            # A fixed, harder rung for ablations: the curriculum would move the
+            # goalposts whenever the policy improves, which makes A/B useless.
+            return CURRICULUM_LEVELS[self.args.holdout_level]["gene"]
         if self.curriculum is not None:
             return self.curriculum.holdout_gene()
         return SCRIPTED_GENES[1]
@@ -333,10 +424,13 @@ class NeuroTrainer:
             reward = r0 if side == 0 else r1
             total_reward += reward
             if collect:
+                ref_logp = (self.ref_agent.logp_of(me_obs, action)
+                            if self.ref_agent is not None else 0.0)
                 ep.steps.append(Step(
                     obs=np.asarray(me_obs, dtype=np.float32).copy(),
                     action=action, logp=logp, value=value,
                     reward=reward * self.args.reward_scale, done=done,
+                    ref_logp=ref_logp,
                 ))
             o0, o1 = n0, n1
             if done:
@@ -417,10 +511,12 @@ class NeuroTrainer:
             "subs": float(np.mean(subs)) if subs else 0.0,
             "sub_avoided": float(np.mean(avoided)) if avoided else 0.0,
             "steps": int(sum(len(ep.steps) for ep in episodes)),
+            "returns": returns,
             "act_hist": hist,
         }
 
-    def _evaluate(self, n: int, kind: str):
+    def _evaluate(self, n: int, kind: str, agent=None):
+        agent = agent if agent is not None else self.agent
         # A fixed seed suite, independent of the training RNG, so the same
         # checkpoint is always scored on the same matches.
         outcomes = []
@@ -443,7 +539,7 @@ class NeuroTrainer:
                 info = {"winner": -1}
                 while True:
                     me_obs = o0 if side == 0 else o1
-                    action, _logp, _value = self.agent.act(me_obs, eval_rng, deterministic=True)
+                    action, _logp, _value = agent.act(me_obs, eval_rng, deterministic=True)
                     if side == 0:
                         opp_action = opp.act(arena.env.p1, arena.env.p0, o1)
                         a0, a1 = action, opp_action
@@ -523,7 +619,23 @@ class NeuroTrainer:
         with self.ledger.phase("collect"):
             episodes, stats = self._collect(self.args.episodes, iteration)
         with self.ledger.phase("ppo"):
+            lr = self.lr_schedule.at(iteration)
+            self.agent.policy_adam.lr = lr
+            self.agent.value_adam.lr = lr
+            self.ppo_cfg.entropy_coef = self.entropy_schedule.at(iteration)
             ppo = self.agent.train(episodes, self.rng)
+        with self.ledger.phase("rft"):
+            if self.rft is not None and stats.get("returns"):
+                self.rft.add(episodes, stats["returns"], self.args.rft_frac)
+                if len(self.rft) >= 32 and self.args.rft_epochs > 0:
+                    for _ in range(self.args.rft_epochs):
+                        x, y = self.rft.arrays()
+                        self.rft_loss = round(self._fit_policy(
+                            x, y, lr=self.args.rft_lr), 4)
+        with self.ledger.phase("ema"):
+            if self.ema is not None:
+                self.ema.update()
+                self.ema.copy_to([self.ema_agent.policy, self.ema_agent.value])
         with self.ledger.phase("world"):
             world_mse = self._world_model_step(episodes)
         if world_mse is not None:
@@ -533,9 +645,14 @@ class NeuroTrainer:
         with self.ledger.phase("eval"):
             if (iteration % self.args.eval_every == 0
                     or self._last_eval is None):
-                self._last_eval = (self._evaluate(self.args.eval_episodes, "holdout"),
-                                   self._evaluate(self.args.eval_episodes, "random"))
-            holdout, random_eval = self._last_eval
+                self._last_eval = (
+                    self._evaluate(self.args.eval_episodes, "holdout"),
+                    self._evaluate(self.args.eval_episodes, "random"),
+                    (self._evaluate(self.args.eval_episodes, "holdout",
+                                    agent=self.ema_agent)
+                     if self.ema_agent is not None else None),
+                )
+            holdout, random_eval, ema_eval = self._last_eval
         entropy = self._entropy(episodes)
 
         self.history.append(float(stats["win"]))
@@ -581,6 +698,12 @@ class NeuroTrainer:
             "holdout_frames": round(float(holdout["frames"]), 1),
             "random_win": round(float(random_eval["win"]), 4),
             "entropy": round(float(entropy), 4),
+            "entropy_coef": round(float(self.ppo_cfg.entropy_coef), 5),
+            "lr": round(float(lr), 6),
+            "ref_kl": round(float(ppo.get("ref_kl", 0.0)), 5),
+            "ema_win": None if ema_eval is None else round(float(ema_eval["win"]), 4),
+            "ema_updates": 0 if self.ema is None else self.ema.updates,
+            "rft_loss": self.rft_loss,
             "world_mse": None if world_mse is None else round(float(world_mse), 5),
             "recon_mse": None if self.recon_mse is None else round(self.recon_mse, 5),
             "world_latent": (self.world_model.latent_dim
@@ -673,6 +796,35 @@ def build_argparser():
     ap.add_argument("--no-curriculum", dest="curriculum", action="store_false")
     ap.add_argument("--curriculum-patience", type=int, default=2)
     ap.add_argument("--wm-level-threshold", type=float, default=0.02)
+
+    # ---- LLM-style training stack ----
+    ap.add_argument("--llm-stack", action="store_true",
+                    help="enable the whole LLM recipe: AdamW, warmup+cosine LR, "
+                         "KL anchor, EMA weights, rejection sampling (RFT), "
+                         "mirror augmentation and entropy annealing")
+    ap.add_argument("--weight-decay", type=float, default=None,
+                    help="decoupled AdamW weight decay on weight matrices")
+    ap.add_argument("--kl-coef", type=float, default=None,
+                    help="RLHF anchor: coefficient on KL(policy || cloned prior)")
+    ap.add_argument("--lr-warmup", type=int, default=None,
+                    help="iterations of linear LR warmup")
+    ap.add_argument("--lr-min-ratio", type=float, default=None,
+                    help="cosine floor as a fraction of --lr (1.0 = flat)")
+    ap.add_argument("--entropy-final", type=float, default=None,
+                    help="anneal entropy_coef to this value over the run")
+    ap.add_argument("--ema-decay", type=float, default=None,
+                    help="EMA decay for the shadow policy (0 = disabled)")
+    ap.add_argument("--rft-frac", type=float, default=None,
+                    help="keep this top fraction of each iteration's episodes "
+                         "for rejection-sampling fine-tuning (0 = disabled)")
+    ap.add_argument("--rft-epochs", type=int, default=None)
+    ap.add_argument("--rft-lr", type=float, default=3e-4)
+    ap.add_argument("--rft-buffer", type=int, default=20000)
+    ap.add_argument("--mirror-bc", action="store_true",
+                    help="left/right mirror augmentation for the BC demos")
+    ap.add_argument("--holdout-level", type=int, default=-1,
+                    help="pin the holdout to CURRICULUM_LEVELS[i] instead of "
+                         "letting the curriculum move it (for clean ablations)")
     return ap
 
 

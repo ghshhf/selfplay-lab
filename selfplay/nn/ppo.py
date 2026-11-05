@@ -43,6 +43,8 @@ class PPOConfig:
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
     target_kl: float | None = None
+    weight_decay: float = 0.0     # AdamW-style, decoupled
+    kl_coef: float = 0.0          # RLHF anchor to the reference policy
 
 
 @dataclass
@@ -53,6 +55,7 @@ class Step:
     value: float
     reward: float
     done: bool
+    ref_logp: float = 0.0         # log-prob under the frozen reference policy
 
 
 @dataclass
@@ -73,8 +76,10 @@ class PPOAgent:
                           activation="tanh", out_activation="identity", rng=rng)
         self.value = MLP([self.obs_dim, self.hidden, 1],
                          activation="tanh", out_activation="identity", rng=rng)
-        self.policy_adam = Adam(self.policy.params, lr=self.cfg.lr)
-        self.value_adam = Adam(self.value.params, lr=self.cfg.lr)
+        self.policy_adam = Adam(self.policy.params, lr=self.cfg.lr,
+                                weight_decay=self.cfg.weight_decay)
+        self.value_adam = Adam(self.value.params, lr=self.cfg.lr,
+                               weight_decay=self.cfg.weight_decay)
 
     # ---------------------------------------------------------------- acting
     def act(self, obs, rng: np.random.Generator, deterministic: bool = False):
@@ -92,6 +97,11 @@ class PPOAgent:
     def value_of(self, obs) -> float:
         x = np.asarray(obs, dtype=DTYPE).reshape(1, -1)
         return float(self.value.forward(x)[0, 0])
+
+    def logp_of(self, obs, action: int) -> float:
+        """Log-probability this agent assigns to ``action`` in ``obs``."""
+        x = np.asarray(obs, dtype=DTYPE).reshape(1, -1)
+        return float(log_softmax(self.policy.forward(x)[0])[int(action)])
 
     def entropy_of(self, obs) -> float:
         x = np.asarray(obs, dtype=DTYPE).reshape(1, -1)
@@ -138,10 +148,11 @@ class PPOAgent:
         obs = np.stack([s.obs for s in all_steps]).astype(DTYPE)
         actions = np.asarray([s.action for s in all_steps], dtype=np.int64)
         old_logp = np.asarray([s.logp for s in all_steps], dtype=np.float64)
+        ref_logp = np.asarray([s.ref_logp for s in all_steps], dtype=np.float64)
         n = len(all_steps)
         metrics = {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0,
                    "approx_kl": 0.0, "clip_frac": 0.0, "grad_norm": 0.0,
-                   "updates": 0}
+                   "ref_kl": 0.0, "updates": 0}
         updates = 0
 
         for _epoch in range(self.cfg.epochs):
@@ -153,6 +164,7 @@ class PPOAgent:
                 b_obs = obs[idx]
                 b_act = actions[idx]
                 b_old = old_logp[idx]
+                b_ref = ref_logp[idx]
                 b_adv = adv[idx]
                 b_ret = ret[idx]
                 bsz = len(idx)
@@ -166,14 +178,20 @@ class PPOAgent:
 
                 unclipped = ratio * b_adv
                 clipped = np.clip(ratio, 1.0 - self.cfg.clip, 1.0 + self.cfg.clip) * b_adv
+                # RLHF anchor: sampled KL(pi || pi_ref).  Shifting the loss by
+                # +beta * KL pulls the policy back towards the cloned prior.
+                ref_kl = logp - b_ref if self.cfg.kl_coef else np.zeros(bsz)
                 policy_loss = -float(np.mean(np.minimum(unclipped, clipped))) \
-                    - self.cfg.entropy_coef * float(np.mean(entropy))
+                    - self.cfg.entropy_coef * float(np.mean(entropy)) \
+                    + self.cfg.kl_coef * float(np.mean(ref_kl))
 
                 # Standard PPO gradient: only the unclipped branch (or the
                 # clipped branch when it is the min) contributes.
                 active = ((b_adv > 0) & (ratio < 1.0 + self.cfg.clip)) | \
                          ((b_adv < 0) & (ratio > 1.0 - self.cfg.clip))
                 dlogp = -b_adv * ratio * active.astype(np.float64) / bsz
+                if self.cfg.kl_coef:
+                    dlogp = dlogp + self.cfg.kl_coef / bsz
 
                 onehot = np.zeros((bsz, self.n_actions), dtype=np.float64)
                 onehot[np.arange(bsz), b_act] = 1.0
@@ -200,6 +218,7 @@ class PPOAgent:
                 metrics["value_loss"] += value_loss
                 metrics["entropy"] += float(np.mean(entropy))
                 metrics["approx_kl"] += approx_kl
+                metrics["ref_kl"] += float(np.mean(ref_kl))
                 metrics["clip_frac"] += clip_frac
                 metrics["grad_norm"] += grad_norm
                 metrics["updates"] += 1
@@ -210,7 +229,8 @@ class PPOAgent:
             if self.cfg.target_kl is not None and metrics["approx_kl"] / max(1, updates) > 1.5 * self.cfg.target_kl:
                 break
 
-        for k in ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac", "grad_norm"):
+        for k in ("policy_loss", "value_loss", "entropy", "approx_kl", "clip_frac",
+                  "grad_norm", "ref_kl"):
             metrics[k] = metrics[k] / max(1, updates)
         metrics["updates"] = updates
         return metrics
