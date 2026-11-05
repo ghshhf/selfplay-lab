@@ -4,6 +4,7 @@ __pycache__/
 *.log
 evo/
 gen_cache.json
+/runs/
 
 # duel 域的大数据（可用 collect_duel.py 重新生成）
 domains/duel/duel.csv

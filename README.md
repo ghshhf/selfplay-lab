@@ -1,6 +1,6 @@
 # SelfPlay Lab
 
-**四个域，一套命题：自己跟自己打，让"世界"在冠军打满时自动变难。**
+**五个域，一套命题：自己跟自己打，让"世界"在冠军打满时自动变难。**
 
 这个仓库想回答一个问题：
 
@@ -8,13 +8,13 @@
 
 结论先说：**机制走通了，瓶颈在评估器。** 详细证据见 [`docs/FINDINGS.md`](docs/FINDINGS.md)。
 
-前三个域用**遗传搜索**（基因 → 个体 → 对战 → 适应度 → 选择 → 变异 → 世界升级）；第四个域 gomoku 故意换成**梯度方法**（双头网络 + 搜索 + DAgger），用来验证同一套自博弈机制换算法形态后是否还成立。
+前三个域用**遗传搜索**（基因 → 个体 → 对战 → 适应度 → 选择 → 变异 → 世界升级）；第四个域 gomoku 换成**梯度方法**（双头网络 + 搜索 + DAgger）；第五个域 neuro 是**纯 NumPy 神经网络自博弈**（PPO + 行为克隆预热 + 冻结 league + one-step 世界模型），用同一个 duel 环境验证"把参数化策略直接交给梯度"能不能跑通，以及评估器健康判据是否仍然成立。
 
 ---
 
-## 一、四个域
+## 一、五个域
 
-同一套代码骨架，换四个"世界"：
+同一套代码骨架，换五个"世界"：
 
 | 域 | 世界是什么 | 决策表示 | 代数 | 难度 | 冠军状态 |
 |---|---|---|---:|---|---|
@@ -22,6 +22,7 @@
 | **duel** | 两个火柴人徒手对打（纯 numpy 物理） | 9 维基因（武器/攻击性/格挡/踢/距离/反应/待机/捡道具/绕陷阱） | 198 | Elo 制 | fit 0.508 → 1.126，Elo 1573，流派「反击×20」 |
 | **sgs** | 三国杀式卡牌单挑 | 4 维基因（攻击性/防守/回血/距离） | 2670 | Lv4（4 维全开） | fit 0.660 —— **零满分，还在爬** |
 | **gomoku** | 五子棋 15×15，对手是 Rapfi（Elo 3073） | 双头网络 48 通道（policy 225 + value 1）+ VCF 搜索 | 300+ 局实测 | 固定强敌 | **0 胜 / 4.9%**，存活 25.5 → **48.2 手** |
+| **neuro** | 同 duel 场景，双方换成神经网络策略 | 15 维观测 → MLP(64) → 6 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
 
 > 代数为各域 `evolve.log` / `progress.tsv` 的实时值，截至 2026-10-29 22:10；gomoku 为 2026-10-30 凌晨实测。
 > 前三个域当时都在后台跑，数字会继续长。
@@ -41,7 +42,7 @@ gomoku 这一条给主命题补上了评估器故障的**第二种形态**：cod
 
 ### 2.1 基因与个体
 
-每个个体是一串实数基因，直接映射成一份可执行的策略。没有神经网络，没有梯度——**只有遗传搜索**。
+遗传域的每个个体是一串实数基因，直接映射成一份可执行的策略。**没有神经网络，没有梯度——只有遗传搜索。**（gomoku / neuro 两个域走梯度路线，见 2.4。）
 
 ```
 code 域 10 维：read_first edit_scope retry_cap backtrack test_cover
@@ -84,6 +85,36 @@ sgs 域 5 维：  hand（初始手牌）sha（杀密度）tao（桃密度）hp�
 
 笔是可替换的：默认读 `fleet/compute` 的端点池，也可以直接用环境变量指定任意 OpenAI 兼容端点（见 3.2）。
 
+### 2.4 神经域：PPO + BC 预热 + 世界模型（neuro 域特有）
+
+neuro 域不依赖 torch，整套网络是纯 NumPy 手写的，这样它和遗传域共享"零额外依赖"的前提：
+
+```
+selfplay/nn/mlp.py         MLP + Adam + 手写反向传播 + checkpoint
+selfplay/nn/ppo.py         离散动作 PPO（GAE / clipped surrogate / entropy / value）
+selfplay/nn/world_model.py one-step 世界模型：obs + action → next obs（MSE）
+selfplay/core/health.py    评估器健康判据（饱和 / 地板锁 / 缺维 / league overfit / 策略坍缩）
+selfplay/core/manifest.py  每次 run 的 manifest（seed / config / git commit / 平台）
+selfplay/core/recorder.py  metrics.jsonl + progress.tsv + 可 resume 的 state
+```
+
+训练闭环：
+
+1. **BC 预热**：先用一个一维阈值专家（`heuristic_action`：进入踢击距离前一直 FWD，进入后 KICK）跑 8 局，行为克隆 60 epoch。神经策略从 6 选 1 的随机初始点直接探索"靠近再出腿"几乎学不到（稀疏奖励），克隆后立刻就能对 random / scripted 双 100% 胜率。
+2. **PPO 微调**：对 random / scripted / 冻结快照混合采样，GAE + clip 更新，不把克隆策略练坏。
+3. **league**：每 2 个 iteration 冻结一份当前策略进对手池，防止只过拟合当前自己。
+4. **world model**：从真实 transition 学 one-step 预测，MSE 从 0.16 降到 0.0076；它同时是评估器的诊断信号。
+5. **world curriculum（新）**：`selfplay/core/curriculum.py`。只有两个信号同时成立才升级：
+   - 评估器 `saturated`（冻结 holdout 已区分不出策略）；
+   - world model 最近 3 个 iteration 的平均 MSE < `--wm-level-threshold`（世界已经可预测）。
+
+   对手阶梯是 `L0 gene1 → L1 gene2 → L2 hard1 → L3 hard2`，升级后训练池保留全部旧档位（防止遗忘），holdout 切到新档位。`floor_lock` 连续出现时自动降级。这就是遗传域"打满就升级"规则的神经版。
+6. **health**：holdout 已 100% 且 entropy 低时直接报 `saturated`——评估器已经区分不出策略，继续调参只是自欺。
+
+实测：L0 在第 5 个 iteration 升级，`holdout_win` 从 1.0 掉到 0.5–0.85，health 回到 `ok`，评估器重新有了梯度。之后 PPO 没有把 L1 打到饱和（稳定在 0.6–0.9），而 world model MSE 继续降到 0.006——**世界"可预测"不等于策略"已掌握"**，这正是课程门控必须要求两个信号同时成立的原因。
+
+**关键修复**：`heuristic_action` 里的距离必须按 `obs[12] * 4.0` 还原成米（`ARENA_HALF = 4.0`），不是 `/8`。旧写法让专家走到贴脸才出手，44% 的对局超时，克隆出来的是"踢不到"的坏策略。
+
 ---
 
 ## 三、怎么跑
@@ -94,7 +125,7 @@ sgs 域 5 维：  hand（初始手牌）sha（杀密度）tao（桃密度）hp�
 pip install numpy
 ```
 
-就这一个。三个域都是纯标准库 + numpy。
+就这一个。遗传域是纯标准库 + numpy；gomoku 的卷积网络用外部 wheel（见该域 README），neuro 域的 MLP / PPO 是纯 numpy 手写，不需要 torch。
 
 ### 3.2 code 域
 
@@ -139,6 +170,36 @@ cd domains/sgs
 python evolve.py --resume --generations 0 --out-dir evo
 ```
 
+### 3.5 neuro 域（神经自博弈）
+
+```bash
+# 默认：BC 预热 + PPO 微调 10 个 iteration
+python domains/neuro/train.py --iterations 10 --episodes 4 --max-frames 600 \
+    --out-dir runs/neuro
+
+# 中断后从 state.json / state.npz 续跑（与不间断训练逐条一致）
+python domains/neuro/train.py --resume --iterations 20 --out-dir runs/neuro
+
+# 只做 BC、不跑 PPO，用来单看克隆策略的底子
+python domains/neuro/train.py --iterations 1 --epochs 0 --out-dir runs/neuro_bc
+
+# 关掉世界模型
+python domains/neuro/train.py --no-world-model --out-dir runs/neuro_nwm
+
+# 关掉自动课程（评估器饱和后不升级，用于对照）
+python domains/neuro/train.py --no-curriculum --out-dir runs/neuro_flat
+
+# 调整升级耐心 / 世界模型门控阈值
+python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015 \
+    --out-dir runs/neuro_tuned
+```
+
+产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
+
+```bash
+python -m unittest discover -s tests -v   # 16 个测试：反向传播、PPO、BC、课程、resume 等价、health
+```
+
 ---
 
 ## 四、目录
@@ -168,6 +229,18 @@ domains/
            diag.py      单局诊断（逐手看命中哪道闸门）
            results/     成果：逐局记录、训练日志、两个关键权重、A/B 原始记录
            logs/        遗传搜索版（路线 A）的历史运行日志
+  neuro/   env.py       把 duel 包装成 15 维观测 / 6 动作的神经训练环境
+           opponents.py random / scripted / 冻结快照 对手池 + BC 专家
+           train.py     BC 预热 + PPO + league + 世界模型 + health + resume
+selfplay/
+  nn/      mlp.py       MLP + Adam + 手写反向传播
+           ppo.py       离散动作 PPO（GAE / clip / entropy）
+           world_model.py  one-step 观测预测模型
+  core/    health.py    评估器健康判据
+           curriculum.py 世界课程（health + world model 双门控）
+           manifest.py  run 元信息
+           recorder.py  metrics.jsonl / progress.tsv / resume 状态
+tests/     test_neuro.py 神经栈的单元与回归测试
 
 data/      前三域的进化轨迹（每 N 代抽样）+ 难度晋升历史 + 当前冠军
 docs/      FINDINGS.md —— 走通到哪一步、崩在哪、下一步怎么扩

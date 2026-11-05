@@ -1,0 +1,1 @@
+"""Neural self-play domain."""
