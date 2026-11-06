@@ -44,10 +44,11 @@ HEAD_STUN = 6             # extra hit-stun on an unblocked head hit
 
 class ArticulatedDuel(Duel):
     def __init__(self, seed=None, hp=MAX_HP, max_frames=1800, start_gap=2.2,
-                 env_cfg=None, weapons=("none", "none"), emotion=False):
+                 env_cfg=None, weapons=("none", "none"), emotion=False,
+                 physics=False):
         super().__init__(seed=seed, hp=hp, max_frames=max_frames,
                          start_gap=start_gap, env_cfg=env_cfg, weapons=weapons,
-                         emotion=emotion)
+                         emotion=emotion, physics=physics)
 
     # ------------------------------------------------------------------ reset
     def reset(self, seed=None):
@@ -222,6 +223,7 @@ class ArticulatedDuel(Duel):
             opp.vx = me.facing * self.knockback
             opp.phase = ""
             opp.move = None
+        return real
 
     # ------------------------------------------------------------------- info
     def _advance(self, a0, a1):

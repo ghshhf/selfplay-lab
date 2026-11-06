@@ -424,7 +424,8 @@ class NeuroTrainer:
             seed = int(self.rng.integers(2 ** 31))
             arena = self.arena_cls(seed=seed, max_frames=max(200, self.args.max_frames // 2),
                                    start_gap=self.args.train_gap,
-                                   emotion=self.args.emotion)
+                                   emotion=self.args.emotion,
+                                   physics=self.args.physics)
             o0, o1 = arena.reset(seed)
             while True:
                 a0 = int(self.rng.integers(self.n_actions))
@@ -458,7 +459,8 @@ class NeuroTrainer:
             kind = i % (len(pool) + 1)
             for side in (0, 1):
                 arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
-                                       start_gap=gap, emotion=self.args.emotion)
+                                       start_gap=gap, emotion=self.args.emotion,
+                                       physics=self.args.physics)
                 o0, o1 = arena.reset(seed)
                 opp = None
                 if kind < len(pool):
@@ -609,7 +611,8 @@ class NeuroTrainer:
     def _play(self, opponent, seed: int, collect: bool):
         arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                             start_gap=self.args.train_gap,
-                            emotion=self.args.emotion)
+                            emotion=self.args.emotion,
+                            physics=self.args.physics)
         o0, o1 = arena.reset(seed)
         side = int(self.rng.integers(2))
         ep = Episode()
@@ -675,6 +678,7 @@ class NeuroTrainer:
             "affect": affect,
             "guard_breaks": int(info.get("guard_breaks", 0)),
             "counters": int(info.get("counters", 0)),
+            "wall_bounces": int(info.get("wall_bounces", 0)),
             "clashes": int(info.get("clashes", 0)),
             "head_hits": int(info.get("head_hits", 0)),
             "jumps": int(info.get("jumps", 0)),
@@ -700,6 +704,7 @@ class NeuroTrainer:
         affects = []
         breaks = []
         counters = []
+        walls = []
         for k in range(n):
             name, opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
@@ -721,6 +726,7 @@ class NeuroTrainer:
             avoided.append(stat["sub_avoided"])
             breaks.append(stat["guard_breaks"])
             counters.append(stat["counters"])
+            walls.append(stat["wall_bounces"])
             if stat["affect"] is not None:
                 affects.append(stat["affect"])
 
@@ -750,6 +756,7 @@ class NeuroTrainer:
             "sub_avoided": float(np.mean(avoided)) if avoided else 0.0,
             "guard_breaks": float(np.mean(breaks)) if breaks else 0.0,
             "counters": float(np.mean(counters)) if counters else 0.0,
+            "wall_bounces": float(np.mean(walls)) if walls else 0.0,
             "affect": (np.mean(affects, axis=0) if affects else None),
             "steps": int(sum(len(ep.steps) for ep in episodes)),
             "returns": returns,
@@ -766,6 +773,7 @@ class NeuroTrainer:
         clashes = []
         heads = []
         subs = []
+        walls = []
         eval_rng = np.random.default_rng(0)
         for seed in range(2000, 2000 + n):
             for side in (0, 1):
@@ -777,7 +785,8 @@ class NeuroTrainer:
                 opp.reset(seed * 2 + side)
                 arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                                     start_gap=self.args.eval_gap,
-                                    emotion=self.args.emotion)
+                                    emotion=self.args.emotion,
+                                    physics=self.args.physics)
                 o0, o1 = arena.reset(seed)
                 info = {"winner": -1}
                 while True:
@@ -807,6 +816,7 @@ class NeuroTrainer:
                 clashes.append(int(info.get("clashes", 0)))
                 heads.append(int(info.get("head_hits", 0)))
                 subs.append(int(info.get("subs", 0)))
+                walls.append(int(info.get("wall_bounces", 0)))
         summary = summarise(outcomes, seed=0)
         margin_summary = summarise(margins, seed=0)
         return {
@@ -820,6 +830,7 @@ class NeuroTrainer:
             "clashes": float(np.mean(clashes)) if clashes else 0.0,
             "head_hits": float(np.mean(heads)) if heads else 0.0,
             "subs": float(np.mean(subs)) if subs else 0.0,
+            "wall_bounces": float(np.mean(walls)) if walls else 0.0,
             "games": len(outcomes),
             "outcomes": outcomes,
         }
@@ -1116,6 +1127,7 @@ class NeuroTrainer:
             "sub_avoided": round(float(stats.get("sub_avoided", 0.0)), 2),
             "guard_breaks": round(float(stats.get("guard_breaks", 0.0)), 2),
             "counters": round(float(stats.get("counters", 0.0)), 2),
+            "wall_bounces": round(float(stats.get("wall_bounces", 0.0)), 2),
             "affect": (None if stats.get("affect") is None else {
                 name: round(float(value), 3) for name, value
                 in zip(AFFECT_KEYS, stats["affect"])}),
@@ -1258,6 +1270,9 @@ def build_argparser():
     ap.add_argument("--emotion", action="store_true",
                     help="append four affect dims per fighter (composure, fear, "
                          "anger, momentum); freeform only, +8 obs dims")
+    ap.add_argument("--physics", action="store_true",
+                    help="freeform only: mass, Coulomb friction, wall "
+                         "restitution, impulse knockback and hitstop")
     ap.add_argument("--fitness", choices=("win", "margin"), default="win",
                     help="selection signal for PBT: binary win rate, or the "
                          "continuous health margin (hp difference / 100)")

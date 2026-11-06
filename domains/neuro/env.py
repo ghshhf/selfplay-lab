@@ -31,10 +31,11 @@ ACTION_NAMES = tuple(D.ACTION_NAMES)
 
 class NeuralArena:
     def __init__(self, seed=None, max_frames=1800, env_cfg=None,
-                 weapons=("none", "none"), start_gap=2.2, emotion=False):
+                 weapons=("none", "none"), start_gap=2.2, emotion=False,
+                 physics=False):
         self.env = D.Duel(seed=seed, max_frames=max_frames, env_cfg=env_cfg,
                           weapons=weapons, start_gap=start_gap,
-                          emotion=emotion)
+                          emotion=emotion, physics=physics)
 
     def reset(self, seed=None):
         return self.env.reset(seed)
@@ -59,17 +60,21 @@ class ArticulatedArena(NeuralArena):
     """Same interface, but contact is limb geometry (23-dim observation)."""
 
     def __init__(self, seed=None, max_frames=1800, env_cfg=None,
-                 weapons=("none", "none"), start_gap=2.2, emotion=False):
+                 weapons=("none", "none"), start_gap=2.2, emotion=False,
+                 physics=False):
         self.env = A.ArticulatedDuel(seed=seed, max_frames=max_frames,
                                      env_cfg=env_cfg, weapons=weapons,
-                                     start_gap=start_gap, emotion=emotion)
+                                     start_gap=start_gap, emotion=emotion,
+                                     physics=physics)
 
 
 class FreeformArena(NeuralArena):
     """Articulated contact plus a vertical axis (29-dim obs, 9 actions)."""
 
     def __init__(self, seed=None, max_frames=1800, env_cfg=None,
-                 weapons=("none", "none"), start_gap=2.2, emotion=False):
+                 weapons=("none", "none"), start_gap=2.2, emotion=False,
+                 physics=False):
         self.env = F.FreeformDuel(seed=seed, max_frames=max_frames,
                                   env_cfg=env_cfg, weapons=weapons,
-                                  start_gap=start_gap, emotion=emotion)
+                                  start_gap=start_gap, emotion=emotion,
+                                  physics=physics)

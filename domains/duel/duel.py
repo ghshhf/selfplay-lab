@@ -100,6 +100,7 @@ class Fighter:
     def __init__(self, x, facing, hp=MAX_HP, weapon="none"):
         self.x = float(x)
         self.vx = 0.0
+        self.mass = 70.0              # kg; only used when physics=True
         self.facing = facing          # +1 / -1
         self.hp = float(hp)
         self.weapon = weapon
@@ -191,19 +192,25 @@ class Duel:
     """
 
     def __init__(self, seed=None, hp=MAX_HP, max_frames=1800, start_gap=2.2,
-                 env_cfg=None, weapons=("none", "none"), emotion=False):
+                 env_cfg=None, weapons=("none", "none"), emotion=False,
+                 physics=False):
         self.rng = np.random.default_rng(seed)
         self.hp0 = float(hp)
         self.max_frames = int(max_frames)
         self.start_gap = float(start_gap)
         self.weapons = tuple(weapons)
         self.emotion = bool(emotion)
+        self.physics = bool(physics)
         # 环境配置（深拷贝，避免跨局串改）
         ec = dict(env_cfg) if env_cfg else {}
         self.half = float(ec.get("half", ARENA_HALF))
         self.walls = [tuple(w) for w in ec.get("walls", [])]
         self.friction = float(ec.get("friction", FRICTION))
         self.knockback = float(ec.get("knockback", KNOCKBACK))
+        # Mass matters only with physics=True, but it is parsed here so both
+        # fighters can be given different weight classes without a new API.
+        self.masses = (float(ec.get("mass0", 70.0)),
+                       float(ec.get("mass1", 70.0)))
         # 道具/陷阱每局重新随机生成（见 _spawn_hazards），这里只存模板
         self.loot_spec = list(ec.get("loot", []))     # [(x, type)] 模板
         self.trap_spec = list(ec.get("traps", []))    # [(x, type)] 模板
@@ -220,6 +227,7 @@ class Duel:
         x1 = float(self.rng.uniform(-off, off)) + gap * 0.5
         self.p0 = Fighter(x0, +1, self.hp0, self.weapons[0])
         self.p1 = Fighter(x1, -1, self.hp0, self.weapons[1])
+        self.p0.mass, self.p1.mass = self.masses
         if self.emotion:
             # Do not make emotion a free symmetry breaker: both fighters draw
             # from the same reset RNG, so seeds stay comparable.

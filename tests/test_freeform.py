@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from domains.duel import limbs
 from domains.duel.duel import (S_IDLE, S_ATTACK, S_BLOCK, S_DUCK, S_JUMP,
-                              FWD, BACK, PUNCH, KICK, BLOCK, IDLE)
+                              S_HURT, FWD, BACK, PUNCH, KICK, BLOCK, IDLE)
 from domains.duel.freeform import (FreeformDuel, JUMP, DUCK, SUB, S_SUB,
                                    N_ACTIONS, OBS_DIM, TECH, AIR_HEIGHT,
                                    JUMP_V, GRAVITY, CHAKRA_MAX, CHAKRA_REGEN,
@@ -27,8 +27,9 @@ from domains.duel.freeform import (FreeformDuel, JUMP, DUCK, SUB, S_SUB,
                                    GUARD_REGEN, ACTION_NAMES)
 
 
-def freeze(dist=0.9, emotion=False):
-    env = FreeformDuel(seed=0, max_frames=900, start_gap=dist, emotion=emotion)
+def freeze(dist=0.9, emotion=False, physics=False):
+    env = FreeformDuel(seed=0, max_frames=900, start_gap=dist,
+                       emotion=emotion, physics=physics)
     env.reset(0)
     env.p0.x, env.p1.x = -dist * 0.5, dist * 0.5
     env.p0.vx = env.p1.vx = 0.0
@@ -384,6 +385,84 @@ class TestEmotionAndGuard(unittest.TestCase):
         scared.p1.guard = 50.0
         idle(scared, 40, a0=KICK, a1=BLOCK)
         self.assertLess(scared.p1.guard, calm.p1.guard)
+
+
+class TestRigidBodyPhysics(unittest.TestCase):
+    def test_jump_still_works_with_physics(self):
+        env = freeze(0.9, physics=True)
+        heights = []
+        for i in range(45):
+            idle(env, 1, a0=JUMP if i == 0 else IDLE)
+            heights.append(env.p0.y)
+        self.assertGreater(max(heights), 0.25)
+        self.assertEqual(env.p0.y, 0.0)
+
+    def test_wall_bounce_is_physical(self):
+        env = freeze(0.9, physics=True)
+        env.p0.x, env.p0.vx = env.half - 0.01, 1.5
+        env.p0.state, env.p0.timer = S_HURT, 20
+        info = idle(env, 2)
+        self.assertGreaterEqual(env.wall_bounces, 1)
+        self.assertLessEqual(env.p0.x, env.half)
+        self.assertLess(env.p0.vx, 0.0)
+        self.assertEqual(info["wall_bounces"], env.wall_bounces)
+
+    def test_walking_into_wall_stops_instead_of_bouncing(self):
+        env = freeze(0.9, physics=True)
+        env.p0.x, env.p1.x = 3.37, 3.99
+        env.p0.vx = 2.5
+        env.p0.state, env.p0.timer = S_IDLE, 1
+        env.p1.state, env.p1.timer = S_IDLE, 1
+        env.p0.facing, env.p1.facing = 1, -1
+        idle(env, 20, a0=FWD)
+        self.assertEqual(env.wall_bounces, 0)
+        self.assertLessEqual(env.p0.x, env.half)
+
+    def test_separation_is_mass_weighted(self):
+        env = freeze(0.9, physics=True)
+        env.p0.x, env.p1.x = 0.0, 0.5
+        env.p0.mass, env.p1.mass = 40.0, 80.0
+        env.p0.vx = env.p1.vx = 0.0
+        x0, x1 = env.p0.x, env.p1.x
+        idle(env, 1)
+        self.assertGreater(abs(env.p0.x - x0), abs(env.p1.x - x1))
+        self.assertAlmostEqual(env.p1.x - env.p0.x, 0.62, places=3)
+
+    def test_hitstop_freezes_the_world(self):
+        env = freeze(0.9, physics=True)
+        env.hitstop = 3
+        x0, timer0, frames0 = env.p0.x, env.p0.timer, env.frames
+        idle(env, 1, a0=JUMP, a1=JUMP)
+        self.assertEqual(env.p0.x, x0)
+        self.assertEqual(env.p0.timer, timer0)
+        self.assertEqual(env.p0.y, 0.0)
+        self.assertEqual(env.frames, frames0 + 1)
+        self.assertEqual(env.hitstop, 2)
+
+    def test_knockback_travels_further_than_legacy(self):
+        # A clean unblocked hit should slide the victim roughly 0.5-1.0 m
+        # with Coulomb friction, instead of the legacy exponential 0.37 m.
+        env = freeze(1.2, physics=True)
+        idle(env, 60, a0=KICK, a1=IDLE)
+        self.assertGreaterEqual(env.knockback_peak, 0.5)
+        self.assertGreater(env.p1.x - 0.6, 0.1)
+
+    def test_heavier_fighter_is_pushed_less(self):
+        def hit_with_mass(m):
+            env = FreeformDuel(seed=0, max_frames=900, start_gap=1.2,
+                               physics=True, env_cfg={"mass1": m})
+            env.reset(0)
+            env.p0.x, env.p1.x = -0.6, 0.6
+            env.p0.facing, env.p1.facing = 1, -1
+            env.p0.state, env.p1.state = S_IDLE, S_IDLE
+            start = env.p1.x
+            idle(env, 60, a0=KICK, a1=IDLE)
+            return env.knockback_peak, env.p1.x - start
+
+        light_peak, light_slide = hit_with_mass(50.0)
+        heavy_peak, heavy_slide = hit_with_mass(120.0)
+        self.assertEqual(light_peak > heavy_peak * 2, True)
+        self.assertGreater(light_slide, heavy_slide)
 
 
 if __name__ == "__main__":

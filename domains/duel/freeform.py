@@ -48,15 +48,15 @@ if str(DUEL_DIR) not in sys.path:
 try:  # package import
     from .duel import (FPS, WALK_SPEED, S_IDLE, S_ATTACK, S_BLOCK, S_HURT,
                        S_KO, S_DUCK, S_JUMP, FWD, BACK, BLOCK, IDLE, PUNCH,
-                       KICK)
+                       KICK, BODY_GAP)
     from .articulated import ArticulatedDuel, HIGH_KICK_SWITCH
-    from . import limbs
+    from . import limbs, physics
 except ImportError:  # script import
     from duel import (FPS, WALK_SPEED, S_IDLE, S_ATTACK, S_BLOCK, S_HURT,
                       S_KO, S_DUCK, S_JUMP, FWD, BACK, BLOCK, IDLE, PUNCH,
-                      KICK)
+                      KICK, BODY_GAP)
     from articulated import ArticulatedDuel, HIGH_KICK_SWITCH
-    import limbs
+    import limbs, physics
 
 JUMP, DUCK, SUB = 6, 7, 8
 N_ACTIONS = 9
@@ -122,6 +122,9 @@ class FreeformDuel(ArticulatedDuel):
         self.sub_avoided = 0
         self.guard_breaks = 0
         self.counters = 0
+        self.wall_bounces = 0
+        self.hitstop = 0
+        self.knockback_peak = 0.0
         obs = super().reset(seed)
         for f in (self.p0, self.p1):
             f.chakra = CHAKRA_MAX
@@ -171,6 +174,12 @@ class FreeformDuel(ArticulatedDuel):
             spd = WALK_SPEED * me.speed_mul() * me.speed_buff * AIR_CONTROL
             me.vx = (spd if act == FWD else -spd * 0.85) * me.facing
             me.state = S_JUMP
+            return
+
+        if self.physics and act == IDLE:
+            # No half-speed hack: Coulomb friction is the only thing that
+            # should stop a sliding body.
+            me.state, me.timer = S_IDLE, 1
             return
 
         if act in (PUNCH, KICK) and me.cooldown <= 0:
@@ -251,6 +260,19 @@ class FreeformDuel(ArticulatedDuel):
 
     # ---------------------------------------------------------------- physics
     def _integrate(self):
+        if self.physics:
+            # Mass/friction/wall model.  Body separation is weighted by inverse
+            # mass, so walking into the heavier fighter moves you, not them.
+            for f in (self.p0, self.p1):
+                if f.y > 0.0 or f.vy > 0.0:
+                    self.air_frames += 1
+                physics.step(f, 1.0 / FPS)
+                if physics.collide_walls(f, self.half, self.walls,
+                                         bounce=(f.state == S_HURT)):
+                    self.wall_bounces += 1
+            if not self._wall_blocks(self.p0.x, self.p1.x):
+                physics.separate_pair(self.p0, self.p1, BODY_GAP)
+            return
         super()._integrate()
         for f in (self.p0, self.p1):
             if f.y > 0.0 or f.vy > 0.0:
@@ -314,8 +336,18 @@ class FreeformDuel(ArticulatedDuel):
                 self.low_hits += 1
             elif move == limbs.FLYING:
                 self.flying_hits += 1
-        super()._apply_limb_hit(me, opp, opp_idx, part, mul, blocked, move,
-                                dmg, rewards)
+        real = super()._apply_limb_hit(me, opp, opp_idx, part, mul, blocked,
+                                       move, dmg, rewards)
+        if self.physics:
+            # The base hit model assigns a fixed knockback speed.  With mass
+            # on, overwrite it with an impulse so heavy/clean hits carry more
+            # and the attacker gets pushed back too.
+            opp.vx = 0.0
+            physics.strike(me, opp, real, blocked=blocked)
+            self.knockback_peak = max(self.knockback_peak, abs(opp.vx))
+            if opp.alive:
+                self.hitstop = max(self.hitstop, physics.hitstop_frames(
+                    real, head=(part == "head"), blocked=blocked))
         me.chakra = min(CHAKRA_MAX, me.chakra + CHAKRA_HIT_GAIN)
         if blocked:
             opp.chakra = min(CHAKRA_MAX, opp.chakra + CHAKRA_BLOCK_GAIN)
@@ -331,7 +363,11 @@ class FreeformDuel(ArticulatedDuel):
         opp.guard = GUARD_RESET
         opp.state = S_HURT
         opp.timer = GUARD_BREAK_STUN
-        opp.vx = me.facing * self.knockback * 0.6
+        if self.physics:
+            opp.vx = 0.0
+            physics.strike(me, opp, 6.0)
+        else:
+            opp.vx = me.facing * self.knockback * 0.6
         opp.phase = ""
         opp.move = None
         if getattr(opp, "affect", None) is not None:
@@ -339,7 +375,25 @@ class FreeformDuel(ArticulatedDuel):
         self.guard_breaks += 1
 
     # -------------------------------------------------------------------- info
+    def _match_info(self):
+        return {
+            "jumps": self.jumps, "low_hits": self.low_hits,
+            "flying_hits": self.flying_hits, "air_frames": self.air_frames,
+            "subs": self.subs, "sub_avoided": self.sub_avoided,
+            "guard_breaks": self.guard_breaks, "counters": self.counters,
+            "wall_bounces": self.wall_bounces,
+            "knockback_peak": round(self.knockback_peak, 3),
+            "guard": (self.p0.guard, self.p1.guard),
+            "hp": (self.p0.hp, self.p1.hp),
+        }
+
     def _advance(self, a0, a1):
+        if self.physics and self.hitstop > 0:
+            # Impact freeze: neither body, timer nor emotion advances.  The
+            # frame counter still ticks, so episode length stays bounded.
+            self.hitstop -= 1
+            self.frames += 1
+            return [0.0, 0.0], False, self._match_info()
         for f in (self.p0, self.p1):
             if f.alive:
                 f.chakra = min(CHAKRA_MAX, f.chakra + CHAKRA_REGEN)
@@ -351,13 +405,5 @@ class FreeformDuel(ArticulatedDuel):
                 if f.invuln > 0:
                     f.invuln -= 1
         rewards, done, info = super()._advance(a0, a1)
-        info["jumps"] = self.jumps
-        info["low_hits"] = self.low_hits
-        info["flying_hits"] = self.flying_hits
-        info["air_frames"] = self.air_frames
-        info["subs"] = self.subs
-        info["sub_avoided"] = self.sub_avoided
-        info["guard_breaks"] = self.guard_breaks
-        info["counters"] = self.counters
-        info["guard"] = (self.p0.guard, self.p1.guard)
+        info.update(self._match_info())
         return rewards, done, info

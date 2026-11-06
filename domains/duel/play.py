@@ -439,11 +439,14 @@ def main(argv=None):
     ap.add_argument("--emotion", action="store_true",
                     help="enable the affect layer (checkpoint must be trained "
                          "with --emotion)")
+    ap.add_argument("--physics", action="store_true",
+                    help="enable mass/friction/wall-bounce/hitstop physics")
     ap.add_argument("--json", type=str, default="")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
-    arena = F.FreeformDuel(max_frames=args.max_frames, emotion=args.emotion)
+    arena = F.FreeformDuel(max_frames=args.max_frames, emotion=args.emotion,
+                           physics=args.physics)
     if args.opponent == "neural":
         ckpt = args.ckpt if args.ckpt.exists() else None
         if ckpt is None:
