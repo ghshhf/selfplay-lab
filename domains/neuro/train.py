@@ -831,6 +831,8 @@ class NeuroTrainer:
         sweeps = []
         evades = []
         eval_rng = np.random.default_rng(0)
+        seat_counts = (np.zeros(self.n_actions, dtype=np.int64),
+                       np.zeros(self.n_actions, dtype=np.int64))
         for seed in range(2000, 2000 + n):
             for side in (0, 1):
                 if kind == "random":
@@ -851,6 +853,7 @@ class NeuroTrainer:
                     me_raw = o0 if side == 0 else o1
                     me_obs = self._pi_obs(me_raw)
                     action, _logp, _value = agent.act(me_obs, eval_rng, deterministic=True)
+                    seat_counts[side][action] += 1
                     if side == 0:
                         opp_action = opp.act(arena.env.p1, arena.env.p0, o1)
                         a0, a1 = action, opp_action
@@ -881,6 +884,16 @@ class NeuroTrainer:
                 evades.append(int(info.get("evades", 0)))
         summary = summarise(outcomes, seed=0)
         margin_summary = summarise(margins, seed=0)
+        if self.args.env == "freeform":
+            names = (FREEFORM_ACTION_NAMES_3D if self.args.arena3d
+                     else FREEFORM_ACTION_NAMES)
+        else:
+            names = ACTION_NAMES
+        hists = []
+        for counts in seat_counts:
+            total = int(counts.sum()) or 1
+            hists.append({names[i]: round(float(counts[i]) / total, 3)
+                          for i in range(min(len(names), self.n_actions))})
         return {
             "win": float(np.mean(outcomes)) if outcomes else 0.0,
             "win_ci_low": summary["ci_low"],
@@ -897,6 +910,7 @@ class NeuroTrainer:
             "sidesteps": float(np.mean(steps_z)) if steps_z else 0.0,
             "sweeps": float(np.mean(sweeps)) if sweeps else 0.0,
             "evades": float(np.mean(evades)) if evades else 0.0,
+            "act_hist0": hists[0], "act_hist1": hists[1],
             "games": len(outcomes),
             "outcomes": outcomes,
         }
@@ -1202,6 +1216,8 @@ class NeuroTrainer:
             "eval_sweeps": round(float(holdout.get("sweeps", 0.0)), 2),
             "evades": round(float(stats.get("evades", 0.0)), 2),
             "eval_evades": round(float(holdout.get("evades", 0.0)), 2),
+            "eval_act_hist0": holdout.get("act_hist0"),
+            "eval_act_hist1": holdout.get("act_hist1"),
             "affect": (None if stats.get("affect") is None else {
                 name: round(float(value), 3) for name, value
                 in zip(AFFECT_KEYS, stats["affect"])}),

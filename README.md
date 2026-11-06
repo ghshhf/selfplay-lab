@@ -199,7 +199,8 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 
 `metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `subs` / `sub_avoided` /
 `guard_breaks` / `counters` / `wall_bounces` / `wall_slams` / `sidesteps` /
-`sweeps` / `evades` / `affect`（回合末四项均值）/ `act_hist`（策略实际按键分布），
+`sweeps` / `evades` / `affect`（回合末四项均值）/ `act_hist`（策略实际按键分布）/
+`eval_act_hist0` / `eval_act_hist1`（eval 时 50 kg 与 100 kg 各自的动作分布，用于检查是否分档），
 用来区分"新动作可用"和"策略真的在用"。
 实测见 FINDINGS 第十一、十四、十九、二十节。
 
