@@ -411,6 +411,53 @@ class TestArena3D(unittest.TestCase):
         obs0, _obs1 = env._obs()
         self.assertGreater(float(obs0[OBS_DIM]), 0.3)
 
+    def test_kick_during_side_hop_becomes_a_sweep(self):
+        env = self._env()
+        idle(env, 1, a0=SIDESTEP)
+        idle(env, 3)
+        idle(env, 1, a0=KICK)
+        self.assertEqual(env.p0.move, limbs.SWEEP)
+        self.assertEqual(env.p0.state, S_ATTACK)
+        self.assertEqual(env.sidesteps, 1)
+
+    def test_sweep_returns_to_the_attack_line(self):
+        env = self._env()
+        idle(env, 1, a0=SIDESTEP)
+        idle(env, 3)
+        idle(env, 1, a0=KICK)
+        self.assertGreater(env.p0.z, 0.0)
+        idle(env, 25)
+        self.assertEqual(env.p0.z, 0.0)
+        self.assertEqual(env.p0.state, S_IDLE)
+
+    def test_sweep_connects_across_the_depth_it_created(self):
+        env = self._env()
+        idle(env, 1, a0=SIDESTEP)
+        idle(env, 3)
+        idle(env, 1, a0=KICK)
+        idle(env, 12)
+        self.assertGreaterEqual(env.sweeps, 1)
+        self.assertLess(env.p1.hp, 100.0)
+
+    def test_sweep_z_tolerance_exceeds_straight_attacks(self):
+        env = self._env()
+        env.p0.state, env.p0.phase = S_ATTACK, "active"
+        env.p0.move, env.p0.timer, env.p0.landed = limbs.SWEEP, 3, False
+        env.p0.z, env.p1.z = 0.45, 0.0
+        hp = env.p1.hp
+        idle(env, 1)
+        self.assertLess(env.p1.hp, hp)             # 0.40 > 0.32: a punch would whiff
+        self.assertEqual(env.sweeps, 1)
+
+    def test_straight_punch_at_the_same_offset_whiffs(self):
+        env = self._env()
+        env.p0.state, env.p0.phase = S_ATTACK, "active"
+        env.p0.move, env.p0.timer, env.p0.landed = PUNCH, 2, False
+        env.p0.z, env.p1.z = 0.45, 0.0
+        hp = env.p1.hp
+        idle(env, 1)
+        self.assertEqual(env.p1.hp, hp)
+
 
 class TestEmotionAndGuard(unittest.TestCase):
     def test_emotion_extends_observation(self):

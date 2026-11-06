@@ -39,6 +39,7 @@ PUNCH, KICK = 2, 3
 HIGH_KICK = 6  # internal technique, selected automatically inside kicking range
 LOW_KICK = 7   # internal: low roundhouse from a crouch, hits the legs
 FLYING = 8     # internal: airborne kick at head height
+SWEEP = 9      # internal: lateral shin sweep, cancel out of a side-hop
 # (windup, active, recover, nominal reach, damage) -- frames at 60 Hz.
 # Jab is the fastest option; front kick out-ranges it; the head kick is slower
 # but lands 1.35x on the head and only exists in the pocket (< 0.84 m).
@@ -48,6 +49,7 @@ ART_MOVES = {
     HIGH_KICK: (12, 4, 18, 0.83, 12.5),  # head kick / mawashi geri
     LOW_KICK: (6, 3, 12, 0.95, 5.0),   # low roundhouse / gedan mawashi
     FLYING: (9, 4, 16, 1.10, 9.0),     # flying kick / hien geri
+    SWEEP: (5, 4, 12, 1.10, 6.5),      # lateral sweep / side-hop cancel
 }
 
 
@@ -132,6 +134,14 @@ def pose(facing, root_x, state, move, phase, timer, spec, frame,
         sh, el = 45.0, 60.0
         hip = 95.0 + 20.0 * ext
         knee = 10.0 * (1.0 - ext)
+    elif state == S_ATTACK and move == SWEEP:
+        # Lateral sweep: the leg comes up to near-horizontal (waist height)
+        # while the torso leans away, so it covers depth as the body returns
+        # to the centre line.
+        sh, el = 48.0, 84.0
+        hip = 30.0 + 60.0 * ext
+        knee = 8.0 * (1.0 - ext)
+        crouch = 0.10
     elif state == S_DUCK:
         sh, el = 55.0, 105.0
         hip, knee = 2.0, 76.0

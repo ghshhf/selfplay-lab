@@ -709,6 +709,7 @@ class NeuroTrainer:
             "wall_bounces": int(info.get("wall_bounces", 0)),
             "wall_slams": int(info.get("wall_slams", 0)),
             "sidesteps": int(info.get("sidesteps", 0)),
+            "sweeps": int(info.get("sweeps", 0)),
             "evades": int(info.get("evades", 0)),
             "clashes": int(info.get("clashes", 0)),
             "head_hits": int(info.get("head_hits", 0)),
@@ -738,6 +739,7 @@ class NeuroTrainer:
         walls = []
         slams = []
         steps_z = []
+        sweeps = []
         evades = []
         for k in range(n):
             name, opp = self._sample_opponent(iteration, k)
@@ -763,6 +765,7 @@ class NeuroTrainer:
             walls.append(stat["wall_bounces"])
             slams.append(stat["wall_slams"])
             steps_z.append(stat["sidesteps"])
+            sweeps.append(stat["sweeps"])
             evades.append(stat["evades"])
             if stat["affect"] is not None:
                 affects.append(stat["affect"])
@@ -799,6 +802,7 @@ class NeuroTrainer:
             "wall_bounces": float(np.mean(walls)) if walls else 0.0,
             "wall_slams": float(np.mean(slams)) if slams else 0.0,
             "sidesteps": float(np.mean(steps_z)) if steps_z else 0.0,
+            "sweeps": float(np.mean(sweeps)) if sweeps else 0.0,
             "evades": float(np.mean(evades)) if evades else 0.0,
             "affect": (np.mean(affects, axis=0) if affects else None),
             "steps": int(sum(len(ep.steps) for ep in episodes)),
@@ -819,6 +823,7 @@ class NeuroTrainer:
         walls = []
         slams = []
         steps_z = []
+        sweeps = []
         evades = []
         eval_rng = np.random.default_rng(0)
         for seed in range(2000, 2000 + n):
@@ -867,6 +872,7 @@ class NeuroTrainer:
                 walls.append(int(info.get("wall_bounces", 0)))
                 slams.append(int(info.get("wall_slams", 0)))
                 steps_z.append(int(info.get("sidesteps", 0)))
+                sweeps.append(int(info.get("sweeps", 0)))
                 evades.append(int(info.get("evades", 0)))
         summary = summarise(outcomes, seed=0)
         margin_summary = summarise(margins, seed=0)
@@ -884,6 +890,7 @@ class NeuroTrainer:
             "wall_bounces": float(np.mean(walls)) if walls else 0.0,
             "wall_slams": float(np.mean(slams)) if slams else 0.0,
             "sidesteps": float(np.mean(steps_z)) if steps_z else 0.0,
+            "sweeps": float(np.mean(sweeps)) if sweeps else 0.0,
             "evades": float(np.mean(evades)) if evades else 0.0,
             "games": len(outcomes),
             "outcomes": outcomes,
@@ -1186,6 +1193,8 @@ class NeuroTrainer:
             "eval_wall_slams": round(float(holdout.get("wall_slams", 0.0)), 2),
             "sidesteps": round(float(stats.get("sidesteps", 0.0)), 2),
             "eval_sidesteps": round(float(holdout.get("sidesteps", 0.0)), 2),
+            "sweeps": round(float(stats.get("sweeps", 0.0)), 2),
+            "eval_sweeps": round(float(holdout.get("sweeps", 0.0)), 2),
             "evades": round(float(stats.get("evades", 0.0)), 2),
             "eval_evades": round(float(holdout.get("evades", 0.0)), 2),
             "affect": (None if stats.get("affect") is None else {

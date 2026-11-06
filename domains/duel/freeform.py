@@ -84,6 +84,7 @@ N_ACTIONS_3D = 10
 ACTION_NAMES_3D = ACTION_NAMES + ("SIDESTEP",)
 Z_LINE = 0.15            # inside this band a sidestep goes outward
 Z_HIT_WIDTH = 0.32       # depth offset that makes a straight attack whiff
+SWEEP_Z_WIDTH = 0.55     # a lateral sweep still connects this far off the line
 SIDESTEP_V = 3.0         # m/s
 SIDESTEP_FRAMES = 9      # out 9 frames, back 9: 0.45 m, 18-frame commitment
 DEPTH_HALF = 1.2         # arena half-depth in metres
@@ -142,6 +143,7 @@ TECH = {
     limbs.HIGH_KICK: limbs.ART_MOVES[limbs.HIGH_KICK],
     limbs.LOW_KICK: limbs.ART_MOVES[limbs.LOW_KICK],
     limbs.FLYING: limbs.ART_MOVES[limbs.FLYING],
+    limbs.SWEEP: limbs.ART_MOVES[limbs.SWEEP],
 }
 
 OBS_DIM = 35   # 29 + chakra/sub cooldown + guard for both fighters
@@ -172,6 +174,7 @@ class FreeformDuel(ArticulatedDuel):
         self.wall_bounces = 0
         self.wall_slams = 0
         self.sidesteps = 0
+        self.sweeps = 0
         self.evades = 0
         self.hitstop = 0
         self.knockback_peak = 0.0
@@ -210,7 +213,14 @@ class FreeformDuel(ArticulatedDuel):
         if act == SUB:
             self._try_substitution(me, opp)
             return
-        if me.state in (S_ATTACK, S_HURT, S_SUB, S_SIDESTEP):
+        if me.state == S_SIDESTEP:
+            # Side-hop cancel: a kick during the hop becomes a lateral sweep.
+            # This is the attack the hop was missing -- it covers the depth the
+            # hop created and slides the body back onto the line as it swings.
+            if self.arena3d and act == KICK and me.cooldown <= 0:
+                self._begin_sweep(me, idx)
+            return
+        if me.state in (S_ATTACK, S_HURT, S_SUB):
             return
 
         if act == SIDESTEP:
@@ -349,8 +359,28 @@ class FreeformDuel(ArticulatedDuel):
         me.vx = 0.0
         self.sidesteps += 1
 
+    def _begin_sweep(self, me, idx):
+        """Start the lateral sweep that cancels the rest of a side-hop."""
+        windup, _active, _recover, _reach, _dmg = TECH[limbs.SWEEP]
+        self.n_swings[idx] += 1
+        me.move = limbs.SWEEP
+        me.state, me.phase, me.timer = S_ATTACK, "windup", windup
+        me.landed = False
+        me.evade_paid = False
+        me.vx = 0.0
+        me.vz = 0.0
+
     def _step_z(self, f):
         if not self.arena3d:
+            return
+        if f.state == S_ATTACK and f.move == limbs.SWEEP:
+            # The sweep itself carries the body back to the centre line at the
+            # same speed as the hop; the leg covers the offset while it does.
+            step = SIDESTEP_V / FPS
+            if abs(f.z) <= step:
+                f.z, f.vz = 0.0, 0.0
+            else:
+                f.z -= math.copysign(step, f.z)
             return
         if f.state == S_SIDESTEP:
             # Scripted hop profile; friction would shorten the outbound leg.
@@ -367,9 +397,9 @@ class FreeformDuel(ArticulatedDuel):
         elif f.z < -self.depth_half:
             f.z, f.vz = -self.depth_half, 0.0
 
-    def _off_line(self, a, b):
+    def _off_line(self, a, b, width=Z_HIT_WIDTH):
         """True when the depth gap is wide enough for a straight attack to miss."""
-        return self.arena3d and space3d.sidestep_clears(a.z, b.z, Z_HIT_WIDTH)
+        return self.arena3d and space3d.sidestep_clears(a.z, b.z, width)
 
     def bodies_separate(self):
         return not self._off_line(self.p0, self.p1)
@@ -472,7 +502,8 @@ class FreeformDuel(ArticulatedDuel):
         # enabled, a side-hop that made an *active* swing whiff also pays the
         # dodger -- avoiding damage alone was not enough to make depth a skill,
         # but the payoff turned out to hurt (FINDINGS 22.5), so it is opt-in.
-        if self._off_line(me, opp):
+        width = SWEEP_Z_WIDTH if me.move == limbs.SWEEP else Z_HIT_WIDTH
+        if self._off_line(me, opp, width):
             if (self.evade_reward > 0.0
                     and opp.state == S_SIDESTEP and me.state == S_ATTACK
                     and me.phase == "active" and not me.evade_paid):
@@ -509,6 +540,8 @@ class FreeformDuel(ArticulatedDuel):
                 self.low_hits += 1
             elif move == limbs.FLYING:
                 self.flying_hits += 1
+            elif move == limbs.SWEEP:
+                self.sweeps += 1
         real = super()._apply_limb_hit(me, opp, opp_idx, part, mul, blocked,
                                        move, dmg, rewards)
         opp.vz = 0.0        # a hit cancels any lateral movement
@@ -556,7 +589,8 @@ class FreeformDuel(ArticulatedDuel):
             "subs": self.subs, "sub_avoided": self.sub_avoided,
             "guard_breaks": self.guard_breaks, "counters": self.counters,
             "wall_bounces": self.wall_bounces, "wall_slams": self.wall_slams,
-            "sidesteps": self.sidesteps, "evades": self.evades,
+            "sidesteps": self.sidesteps, "sweeps": self.sweeps,
+            "evades": self.evades,
             "knockback_peak": round(self.knockback_peak, 3),
             "guard": (self.p0.guard, self.p1.guard),
             "hp": (self.p0.hp, self.p1.hp),

@@ -58,6 +58,7 @@ MOVE_LABEL = {
     L.HIGH_KICK: "头踢",
     L.LOW_KICK: "低扫",
     L.FLYING: "飞踢",
+    L.SWEEP: "横扫",
 }
 PART_LABEL = {"head": "头", "torso": "躯干", "leg": "腿", "guard": "格挡"}
 

@@ -198,7 +198,7 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 
 `metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `subs` / `sub_avoided` /
 `guard_breaks` / `counters` / `wall_bounces` / `wall_slams` / `sidesteps` /
-`evades` / `affect`（回合末四项均值）/ `act_hist`（策略实际按键分布），
+`sweeps` / `evades` / `affect`（回合末四项均值）/ `act_hist`（策略实际按键分布），
 用来区分"新动作可用"和"策略真的在用"。
 实测见 FINDINGS 第十一、十四、十九、二十节。
 
@@ -241,6 +241,7 @@ Tekken/Soulcalibur 的 sidestep 让同一招在距离不变时挥空。这没法
 | 身位分离 | `bodies_separate()` 在错线时关闭 | 侧移不会被碰撞求解器推回来 |
 | 观测 | 双方 `z / depth_half`、`vz / 4`，共 +4 维 | 策略能看见自己是否离开攻击线 |
 | 兑现（实验性） | `--evade-reward`：active 帧挥空且防守方在侧跳中时付费，**默认关闭** | 40 轮 A/B：开 0.8 是 .375，关是 .500 —— 奖励反而更差，故只保留开关（第二十二节 22.5） |
+| 横扫 | 侧跳任意帧按 `KICK` 取消剩余侧跳，起手 `SWEEP`（5/4/12 帧，伤害 6.5），纵深容差 0.55 m | 侧跳第一次有了打回去的手段；训练 0.61 次/局，但确定性 eval 从不选它（22.6） |
 | 渲染 | 字符画按 `x + 0.5·z` 投影并显示 `z` | 侧移在终端里可见 |
 
 路线：**几何（已完成）→ z 轴侧移动作与 z 观测（已完成）→ 3D 肢体胶囊姿态 → 摄像机/渲染**。
@@ -486,7 +487,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 189 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级、3D 几何/纵深侧移/错线挥空/evade 兑现、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
+python -m unittest discover -s tests -v   # 194 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级、3D 几何/纵深侧移/错线挥空/侧跳横扫/evade 兑现、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
 ```
 
 ---
