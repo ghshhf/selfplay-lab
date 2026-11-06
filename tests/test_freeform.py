@@ -26,12 +26,14 @@ from domains.duel.freeform import (FreeformDuel, JUMP, DUCK, SUB, S_SUB,
                                    AIR_HEIGHT, Z_HIT_WIDTH, SIDESTEP_V,
                                    JUMP_V, GRAVITY, CHAKRA_MAX, CHAKRA_REGEN,
                                    SUB_COST, SUB_DIST, SUB_COOLDOWN,
-                                   GUARD_REGEN, ACTION_NAMES)
+                                   GUARD_REGEN, ACTION_NAMES, WEAPON_EXTRA)
 
 
-def freeze(dist=0.9, emotion=False, physics=False):
+def freeze(dist=0.9, emotion=False, physics=False, weapons=("none", "none"),
+           env_cfg=None):
     env = FreeformDuel(seed=0, max_frames=900, start_gap=dist,
-                       emotion=emotion, physics=physics)
+                       emotion=emotion, physics=physics, weapons=weapons,
+                       env_cfg=env_cfg)
     env.reset(0)
     env.p0.x, env.p1.x = -dist * 0.5, dist * 0.5
     env.p0.vx = env.p1.vx = 0.0
@@ -87,6 +89,67 @@ class TestMassObservation(unittest.TestCase):
         self.assertAlmostEqual(float(o0[-1]), 100.0 / 140.0, places=5)
         self.assertAlmostEqual(float(o1[-2]), 100.0 / 140.0, places=5)
         self.assertAlmostEqual(float(o1[-1]), 50.0 / 140.0, places=5)
+
+
+class TestWeapons(unittest.TestCase):
+    def _punch_at(self, weapon, dist, frames=40):
+        env = freeze(dist=dist, weapons=(weapon, "none"))
+        for _ in range(frames):
+            env.p0.x, env.p1.x = -dist * 0.5, dist * 0.5
+            env.step(PUNCH, IDLE)
+        return env
+
+    def test_polearm_outranges_the_jab(self):
+        # 2.6 m is outside every unarmed limb (measured threshold ~1.1 m)
+        # but inside the 2.78 m spear.
+        unarmed = self._punch_at("none", 2.6)
+        self.assertEqual(unarmed.damage_dealt[0], 0.0)
+        self.assertFalse(unarmed.events)
+        spear = self._punch_at("polearm", 2.6)
+        self.assertGreater(spear.damage_dealt[0], 0.0)
+        self.assertTrue(spear.events)
+        # 3.2 m is past the shaft and must whiff.
+        far = self._punch_at("polearm", 3.2)
+        self.assertEqual(far.damage_dealt[0], 0.0)
+
+    def test_polearm_has_no_kick(self):
+        env = freeze(dist=0.8, weapons=("polearm", "none"))
+        for _ in range(60):
+            env.step(KICK, IDLE)
+        self.assertEqual(env.n_swings[0], 0)
+        self.assertNotEqual(env.p0.state, S_ATTACK)
+
+    def test_twin_buffs_damage_but_not_unarmed(self):
+        slow = self._punch_at("none", 0.9, frames=30)
+        fast = self._punch_at("twin", 0.9, frames=30)
+        self.assertGreater(fast.damage_dealt[0], slow.damage_dealt[0])
+        self.assertEqual(slow.spec_of(slow.p0, PUNCH), TECH[PUNCH])
+        # Internal kick variants inherit the twin multiplier (15.4 / 11 = 1.4).
+        spec = fast.spec_of(fast.p0, limbs.HIGH_KICK)
+        self.assertAlmostEqual(spec[4],
+                               limbs.ART_MOVES[limbs.HIGH_KICK][4] * 15.4 / 11.0,
+                               places=5)
+
+    def test_weapon_observation_is_optional_and_ordered(self):
+        blind_env = freeze(weapons=("polearm", "twin"))
+        blind0, _blind1 = blind_env.reset(0)
+        self.assertEqual(len(blind0), OBS_DIM)
+        aware = FreeformDuel(seed=0, max_frames=300,
+                             weapons=("polearm", "twin"),
+                             env_cfg={"weapon_obs": True})
+        o0, o1 = aware.reset(0)
+        self.assertEqual(len(o0), OBS_DIM + WEAPON_EXTRA)
+        idx = {name: i for i, name in enumerate(
+            ("none", "polearm", "shield", "twin", "javelin"))}
+        denom = 4.0
+        self.assertAlmostEqual(float(o0[-2]), idx["polearm"] / denom, places=6)
+        self.assertAlmostEqual(float(o0[-1]), idx["twin"] / denom, places=6)
+        self.assertAlmostEqual(float(o1[-2]), idx["twin"] / denom, places=6)
+        self.assertAlmostEqual(float(o1[-1]), idx["polearm"] / denom, places=6)
+
+    def test_unsupported_projectile_is_rejected(self):
+        with self.assertRaises(ValueError):
+            FreeformDuel(seed=0, weapons=("javelin", "none"))
 
 
 class TestRandomMass(unittest.TestCase):

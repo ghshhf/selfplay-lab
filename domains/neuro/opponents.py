@@ -101,7 +101,8 @@ class ScriptedOpponent:
 ARENA_HALF = 4.0  # duel.py normalises x by this, so obs[12] = dx_meters / 4
 
 
-def heuristic_action(obs, pocket: bool = False) -> int:
+def heuristic_action(obs, pocket: bool = False, reach: float | None = None,
+                     has_kick: bool = True) -> int:
     """A cheap scripted expert used only to bootstrap the neural policy.
 
     Observation layout (self-centric, 15 dims)::
@@ -124,11 +125,19 @@ def heuristic_action(obs, pocket: bool = False) -> int:
     and punch.  The jab's 4-frame windup and chin-height contact make the head
     the primary target, which is exactly the behaviour we want the clone to
     inherit.  The default keeps the 1-D duel's out-fighting kick range.
+
+    ``reach`` / ``has_kick`` let the same expert drive an armed body.  A
+    polearm (reach 2.8 m, no kick) walks to just inside its thrust and presses
+    PUNCH; without this the clone learned to mash the dead KICK button and
+    never used the weapon at all.  Unarmed / shield / twin keep the legacy
+    thresholds, so the baseline demonstrations are unchanged.
     """
     dx = abs(float(obs[12])) * ARENA_HALF
+    if reach is not None and reach > 2.0:
+        return 0 if dx > reach * 0.9 else 2
     if pocket:
         return 2 if dx <= 0.95 else 0
-    return 0 if dx > 1.30 else 3
+    return 0 if dx > 1.30 else (3 if has_kick else 2)
 
 
 class SnapshotOpponent:

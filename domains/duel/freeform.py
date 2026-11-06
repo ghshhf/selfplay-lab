@@ -56,13 +56,13 @@ if str(DUEL_DIR) not in sys.path:
 try:  # package import
     from .duel import (FPS, WALK_SPEED, S_IDLE, S_ATTACK, S_BLOCK, S_HURT,
                        S_KO, S_DUCK, S_JUMP, FWD, BACK, BLOCK, IDLE, PUNCH,
-                       KICK, BODY_GAP)
+                       KICK, BODY_GAP, WEAPONS, WEAPON_NAMES)
     from .articulated import ArticulatedDuel, HIGH_KICK_SWITCH
     from . import limbs, physics, space3d
 except ImportError:  # script import
     from duel import (FPS, WALK_SPEED, S_IDLE, S_ATTACK, S_BLOCK, S_HURT,
                       S_KO, S_DUCK, S_JUMP, FWD, BACK, BLOCK, IDLE, PUNCH,
-                      KICK, BODY_GAP)
+                      KICK, BODY_GAP, WEAPONS, WEAPON_NAMES)
     from articulated import ArticulatedDuel, HIGH_KICK_SWITCH
     import limbs, physics, space3d
 
@@ -150,6 +150,13 @@ TECH = {
 OBS_DIM = 35   # 29 + chakra/sub cooldown + guard for both fighters
 GUARD_EXTRA = 2
 EMOTION_EXTRA = 8   # four affect dims for each fighter
+WEAPON_EXTRA = 2    # weapon id for both fighters (optional, see weapon_obs)
+
+# Only melee weapons can be expressed by the sagittal-plane geometry.  A thrown
+# javelin needs projectile state, so it is rejected rather than silently
+# behaving like an unarmed jab.
+WEAPON_MELEE = limbs.WEAPON_MELEE
+WEAPON_INDEX = {name: i for i, name in enumerate(WEAPON_NAMES)}
 
 
 class FreeformDuel(ArticulatedDuel):
@@ -168,7 +175,15 @@ class FreeformDuel(ArticulatedDuel):
         # Weight-class curriculum: when set to (lo, hi), both bodies are
         # resampled every episode so the policy sees a continuum of builds.
         self.rand_mass = ec.get("rand_mass") or None
+        # A shared policy that is randomly seated on either body needs to know
+        # which weapon it is holding and what the other body carries.
+        self.weapon_obs = bool(ec.get("weapon_obs", False))
         super().__init__(*args, **kwargs)
+        for f in (self.p0, self.p1):
+            if f.weapon not in limbs.WEAPON_MELEE:
+                raise ValueError(
+                    "freeform has no geometry for weapon %r; supported: %s"
+                    % (f.weapon, ", ".join(limbs.WEAPON_MELEE)))
 
     def reset(self, seed=None):
         self.jumps = 0
@@ -209,14 +224,39 @@ class FreeformDuel(ArticulatedDuel):
 
     # ------------------------------------------------------------------- pose
     def _build_pose(self, f):
-        spec = TECH.get(f.move) if f.state == S_ATTACK else None
+        spec = self.spec_of(f, f.move) if f.state == S_ATTACK else None
         return limbs.pose(f.facing, f.x, f.state, f.move, f.phase, f.timer,
-                          spec, self.frames, root_y=f.y)
+                          spec, self.frames, root_y=f.y, weapon=f.weapon)
 
     def spec_of(self, f, move):
-        # Low kicks / flying kicks are not in WEAPONS[...]["attacks"]; the
-        # inherited tick has to be able to look up their frame windows.
-        return TECH[move]
+        """Frame windows and damage for this fighter's current weapon.
+
+        The freeform damage scale is ART_MOVES (jab 5.5, front kick 8.5), not
+        the older v2 table (7.0 / 11.0).  A weapon therefore contributes a
+        *multiplier* relative to its own v2 entry, so unarmed play stays
+        bit-identical and a twin blade keeps its +40% design intent on top of
+        the freeform numbers:
+
+            polearm thrust  8/3/10, 5.5 * 9.0/7.0  = 7.07, reach 2.78 m
+            twin jab        5/3/ 8, 5.5 * 9.8/7.0  = 7.70
+            twin front kick 10/3/15, 8.5 * 15.4/11 = 11.90
+
+        Head / low / flying kicks keep their state-specific timing and inherit
+        the twin multiplier.  A shield changes no technique, only guard and
+        mobility (both already in WEAPONS).
+        """
+        attacks = f.attacks()
+        base = TECH[move]
+        if f.weapon in ("polearm", "twin") and move in (PUNCH, KICK) \
+                and move in attacks:
+            w = attacks[move]
+            ref = WEAPONS["none"]["attacks"][move][4]
+            return w[:4] + (base[4] * w[4] / ref,)
+        if f.weapon == "twin" and move in (limbs.HIGH_KICK, limbs.LOW_KICK,
+                                           limbs.FLYING):
+            mul = attacks[KICK][4] / WEAPONS["none"]["attacks"][KICK][4]
+            return base[:4] + (base[4] * mul,)
+        return base
 
     # ----------------------------------------------------------------- action
     def _apply_action(self, me, opp, act, idx, rewards):
@@ -230,7 +270,8 @@ class FreeformDuel(ArticulatedDuel):
             # Side-hop cancel: a kick during the hop becomes a lateral sweep.
             # This is the attack the hop was missing -- it covers the depth the
             # hop created and slides the body back onto the line as it swings.
-            if self.arena3d and act == KICK and me.cooldown <= 0:
+            if (self.arena3d and act == KICK and me.cooldown <= 0
+                    and KICK in me.attacks()):
                 self._begin_sweep(me, idx)
             return
         if me.state in (S_ATTACK, S_HURT, S_SUB):
@@ -269,8 +310,13 @@ class FreeformDuel(ArticulatedDuel):
 
         if act in (PUNCH, KICK) and me.cooldown <= 0:
             dist = abs(opp.x - me.x)
+            attacks = me.attacks()
             move = PUNCH
             if act == KICK:
+                # A two-handed polearm has no kick; the button simply does
+                # nothing, exactly as an unavailable move does in duel.py.
+                if KICK not in attacks:
+                    return
                 if me.y > AIR_HEIGHT:
                     move = limbs.FLYING
                 elif me.state == S_DUCK:
@@ -279,7 +325,7 @@ class FreeformDuel(ArticulatedDuel):
                     move = limbs.HIGH_KICK
                 else:
                     move = KICK
-            windup, active, recover, reach, dmg = TECH[move]
+            windup, active, recover, reach, dmg = self.spec_of(me, move)
             self.n_swings[idx] += 1
             me.move = move
             me.state = S_ATTACK
@@ -351,6 +397,12 @@ class FreeformDuel(ArticulatedDuel):
         if self.mass_obs:
             extra = np.concatenate([extra, np.array([
                 me.mass / 140.0, other.mass / 140.0,
+            ], dtype=np.float32)])
+        if self.weapon_obs:
+            denom = max(1, len(WEAPON_NAMES) - 1)
+            extra = np.concatenate([extra, np.array([
+                WEAPON_INDEX[me.weapon] / denom,
+                WEAPON_INDEX[other.weapon] / denom,
             ], dtype=np.float32)])
         return np.concatenate([base, extra])
 
@@ -540,7 +592,7 @@ class FreeformDuel(ArticulatedDuel):
         part, mul, clearance = limbs.closest_hurt(self.pose_of(opp), seg)
         if clearance > 0.0:
             return None
-        return part, mul, blocked, me.move, TECH[me.move][4]
+        return part, mul, blocked, me.move, self.spec_of(me, me.move)[4]
 
     def counter_bonus(self, me, opp):
         # Hitting a windup or recovery is a counter.  Hitting an *active* limb

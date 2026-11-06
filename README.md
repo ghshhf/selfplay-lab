@@ -201,12 +201,14 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 `metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `subs` / `sub_avoided` /
 `guard_breaks` / `counters` / `wall_bounces` / `wall_slams` / `sidesteps` /
 `sweeps` / `evades` / `affect`（回合末四项均值）/ `act_hist`（策略实际按键分布）/
-`eval_act_hist0` / `eval_act_hist1`（eval 时 50 kg 与 100 kg 各自的动作分布，用于检查是否分档），
+`eval_act_hist0` / `eval_act_hist1`（eval 时 seat0 / seat1 各自的动作分布，用于检查
+武器/体重分档），以及 `eval_win0` / `eval_win1` / `eval_games0` / `eval_games1`
+（按席位拆开的胜率；非对称构建实验必须看这两个，不能只看合计），
 用来区分"新动作可用"和"策略真的在用"。
 最后一轮还会写 `arch_wins` / `arch_min_win`：三个风格区域（rush / counter /
 zoner）各 5 个固定基因的面板平均胜率，以及最差风格。它是纯诊断，不参与训练；
 单个固定基因会卡在时机悬崖上，所以用面板而不是单点（FINDINGS 24）。
-实测见 FINDINGS 第十一、十四、十九、二十、二十四节。
+实测见 FINDINGS 第十一、十四、十九、二十、二十四、二十六节。
 
 查克拉是一条独立资源：上限 100、每帧回 0.6（约 2.8 秒回满），命中 +12、格挡成功 +4。
 所以替身不是免费翻滚，而是和进攻抢资源；被打进硬直时按 SUB 也能脱身，但落地有 6 帧硬直可被反打。
@@ -258,6 +260,24 @@ Tekken/Soulcalibur 的 sidestep 让同一招在距离不变时挥空。这没法
 > （95% CI ±.15，McNemar p=1.00）：**3D 与 2D 不可区分，既非净成本也非增益**。
 > 同批对局切成三个 8 局窗口，差值符号会翻转（−16.7 / +16.7 / −4.2 pp）。
 > 结论见 FINDINGS 22.7。
+
+武器是"构建"轴，不是新动作：长矛是从手伸出 2.0 m 的刚性胶囊（总长 2.78 m）+ 8 帧双手前刺，
+只有 PUNCH；双刃是 0.16 m 刀身、伤害 ×1.4 但起手/后摇更慢；两者都按
+几何胶囊判定，不是数值表。5 个 arm × 3 seeds × 144 局（48 局/seed 离线复核）：
+
+| arm | 胜率 | Δ vs 徒手 baseline |
+|---|---|---|
+| 徒手 baseline | .542 | — |
+| 对称长矛 | **.833** | **+29.2 pp [+18.8, +39.6]** |
+| 非对称（有武器观测） | **.812**（seat0 1.000 / seat1 .625） | **+27.1 pp [+16.0, +38.2]** |
+| 非对称（蒙眼） | .729（seat0 .972 / seat1 .486） | +18.8 pp [+7.6, +29.9] |
+| 对称双刃 | .403 | **−13.9 pp [−24.3, −2.8]** |
+
+长矛把 agent 的平均命中身距从 1.15 m 推到 1.51–1.83 m，挥空率从 52% 降到 8%；
+同一策略的镜像对局里，持械身体对徒手身体赢 73.4%（长矛）和 75.3%（双刃，
+576 局/武器）。
+所以双刃身体本身不弱，是当前的徒手时序 BC 先验没把"慢一拍但更重"的节奏
+学回来。非对称对局建议开 `--weapon-obs`（徒手席位 +13.9 pp）。见 FINDINGS 26。
 
 #### LLM 训练栈（`selfplay/nn/llmstack.py`）
 
@@ -456,6 +476,20 @@ python domains/neuro/train.py --env freeform --physics --arena3d \
 python domains/neuro/train.py --env freeform --physics --arena3d \
     --iterations 40 --episodes 4 --eval-episodes 12 --out-dir runs/neuro_3d_24
 
+# 武器构建：双方长矛（35 维观测；只有 PUNCH，KICK 对无踢武器无效）
+python domains/neuro/train.py --env freeform --physics --weapons polearm polearm \
+    --iterations 40 --episodes 4 --eval-episodes 12 --out-dir runs/neuro_polearm
+
+# 非对称武器 + 武器观测（37 维）：同一策略随机坐拿矛/徒手席位
+python domains/neuro/train.py --env freeform --physics --weapons polearm none \
+    --weapon-obs --iterations 40 --episodes 4 --eval-episodes 12 \
+    --out-dir runs/neuro_polearm_none
+
+# 对照：蒙眼（35 维），用来测武器 id 观测的收益
+python domains/neuro/train.py --env freeform --physics --weapons polearm none \
+    --iterations 40 --episodes 4 --eval-episodes 12 \
+    --out-dir runs/neuro_polearm_none_blind
+
 # 再打开情绪层（冷静/恐惧/愤怒/气势，43 维观测）
 python domains/neuro/train.py --env freeform --emotion --entropy-coef 0.05 \
     --iterations 15 --episodes 5 --out-dir runs/neuro_emo
@@ -513,7 +547,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 196 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级/体重观测/随机体重、3D 几何/纵深侧移/错线挥空/侧跳横扫/evade 兑现、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
+python -m unittest discover -s tests -v   # 202 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级/体重观测/随机体重、武器几何/长矛射程/武器观测/拒绝投枪、3D 几何/纵深侧移/错线挥空/侧跳横扫/evade 兑现、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
 ```
 
 ---

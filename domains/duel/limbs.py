@@ -32,6 +32,15 @@ FIST_R = 0.09
 FOOT_R = 0.10
 GUARD_R = 0.10
 
+# ---- held weapons ----------------------------------------------------------
+# A weapon only changes the *geometry of the attacking limb*; the frame timing
+# and damage come from ``duel.WEAPONS``.  ``tip`` is measured from the hand.
+POLEARM_LEN = 2.00      # hand + 0.78 m arm -> tip ~2.78 m from the root
+POLEARM_R = 0.035
+TWIN_LEN = 0.16         # short blade past the fist, total reach ~1.14 m
+TWIN_R = 0.05
+WEAPON_MELEE = ("none", "polearm", "shield", "twin")
+
 # state ids mirror duel.py
 S_IDLE, S_WALK, S_ATTACK, S_BLOCK, S_HURT, S_KO = range(6)
 S_DUCK, S_JUMP = 6, 7
@@ -100,13 +109,25 @@ def joint_points(facing, root_x, shoulder_deg, elbow_deg, hip_deg, knee_deg,
 
 
 def pose(facing, root_x, state, move, phase, timer, spec, frame,
-         root_y=0.0, crouch=None):
-    """Map a fighter's discrete state to joint angles, then to points."""
+         root_y=0.0, crouch=None, weapon="none"):
+    """Map a fighter's discrete state to joint angles, then to points.
+
+    ``weapon`` only alters the pose of the attacking arm / the geometry that
+    hangs off the hand.  Body build (weight class) is still handled by the
+    caller through ``crouch`` and the physics layer.
+    """
     ext = extension(state, phase, timer, spec) if spec else 0.0
     if crouch is None:
         crouch = 1.0 if state == S_DUCK else 0.0
 
-    if state == S_ATTACK and move == PUNCH:
+    if weapon == "polearm" and state == S_ATTACK and move == PUNCH:
+        # Two-handed thrust: the hands retract to the shoulder, then drive
+        # straight forward at upper-chest height.  The spear itself is rigid,
+        # so the reach comes from the pose plus the shaft.
+        sh = 55.0 + 35.0 * ext
+        el = 90.0 - 90.0 * ext
+        hip, knee = 4.0, 6.0
+    elif state == S_ATTACK and move == PUNCH:
         # High guard -> straight jab at chin height (4-frame windup).
         sh = 60.0 + 40.0 * ext
         el = 80.0 - 70.0 * ext
@@ -167,8 +188,29 @@ def pose(facing, root_x, state, move, phase, timer, spec, frame,
         sh, el = 12.0, 14.0
         hip, knee = 4.0, 6.0
 
-    return joint_points(facing, root_x, sh, el, hip, knee,
-                        root_y=root_y, crouch=crouch)
+    pts = joint_points(facing, root_x, sh, el, hip, knee,
+                       root_y=root_y, crouch=crouch)
+    pts["weapon"] = weapon
+    pts["weapon_tip"] = _weapon_tip(pts, weapon)
+    return pts
+
+
+def _weapon_tip(pts, weapon):
+    """Point where a held weapon ends, measured from the hand."""
+    hx, hy = pts["hand"]
+    f = 1.0 if hx >= pts["shoulder"][0] else -1.0
+    if weapon == "polearm":
+        return (hx + f * POLEARM_LEN, hy)
+    if weapon == "twin":
+        # Blade continues the forearm direction, so it shortens when the arm
+        # folds and lengthens on extension -- just like the fist.
+        ex, ey = pts["elbow"]
+        vx, vy = hx - ex, hy - ey
+        n = math.hypot(vx, vy)
+        if n < 1e-6:
+            return (hx + f * TWIN_LEN, hy)
+        return (hx + vx / n * TWIN_LEN, hy + vy / n * TWIN_LEN)
+    return (hx, hy)
 
 
 def attack_capsule(ch):
@@ -179,6 +221,11 @@ def attack_capsule(ch):
 
 
 def attack_segments(pose_dict, move):
+    weapon = pose_dict.get("weapon", "none")
+    if move == PUNCH and weapon == "polearm":
+        return pose_dict["hand"], pose_dict["weapon_tip"], POLEARM_R
+    if move == PUNCH and weapon == "twin":
+        return pose_dict["hand"], pose_dict["weapon_tip"], TWIN_R
     a, b, r = attack_capsule(move)
     return pose_dict[a], pose_dict[b], r
 

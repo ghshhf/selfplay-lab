@@ -465,6 +465,12 @@ def main(argv=None):
                          "swing whiff (off by default)")
     ap.add_argument("--mass-obs", action="store_true",
                     help="append [self mass, opponent mass] to the observation")
+    ap.add_argument("--weapons", nargs=2, choices=F.WEAPON_MELEE,
+                    default=("none", "none"), metavar=("SEAT0", "SEAT1"),
+                    help="weapon carried by each seat (melee only)")
+    ap.add_argument("--weapon-obs", action="store_true",
+                    help="append [self weapon id, opponent weapon id] to the "
+                         "observation")
     ap.add_argument("--json", type=str, default="")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
@@ -476,10 +482,12 @@ def main(argv=None):
         env_cfg["evade_reward"] = float(args.evade_reward)
     if args.mass_obs:
         env_cfg["mass_obs"] = True
+    if args.weapon_obs:
+        env_cfg["weapon_obs"] = True
     env_cfg = env_cfg or None
     arena = F.FreeformDuel(max_frames=args.max_frames, emotion=args.emotion,
                            physics=args.physics, env_cfg=env_cfg,
-                           arena3d=args.arena3d)
+                           arena3d=args.arena3d, weapons=tuple(args.weapons))
     if args.opponent == "neural":
         ckpt = args.ckpt if args.ckpt.exists() else None
         if ckpt is None:
@@ -490,7 +498,8 @@ def main(argv=None):
                              obs_dim=(F.OBS_DIM_3D if args.arena3d
                                       else F.OBS_DIM)
                              + (F.EMOTION_EXTRA if args.emotion else 0)
-                             + (F.MASS_EXTRA if args.mass_obs else 0),
+                             + (F.MASS_EXTRA if args.mass_obs else 0)
+                             + (F.WEAPON_EXTRA if args.weapon_obs else 0),
                              n_actions=(F.N_ACTIONS_3D if args.arena3d
                                         else F.N_ACTIONS))
     elif args.opponent == "scripted":

@@ -43,6 +43,18 @@ class TestHeuristicExpert(unittest.TestCase):
         obs[12] = -1.0 / 4.0
         self.assertEqual(heuristic_action(obs), 3)  # symmetric for both sides
 
+    def test_armed_expert_uses_its_own_reach_and_buttons(self):
+        # Polearm: stand just inside 90% of the 2.8 m thrust and press PUNCH.
+        obs = np.zeros(OBS_DIM, dtype=np.float32)
+        obs[12] = 2.4 / 4.0
+        self.assertEqual(heuristic_action(obs, reach=2.8), 2)
+        obs[12] = 2.7 / 4.0
+        self.assertEqual(heuristic_action(obs, reach=2.8), 0)
+        # A body without a kick must never be told to press KICK.
+        obs[12] = 0.8 / 4.0
+        self.assertEqual(heuristic_action(obs, has_kick=False), 2)
+        self.assertEqual(heuristic_action(obs, has_kick=True), 3)
+
 
 class TestWorldCurriculum(unittest.TestCase):
     def _cur(self, **kw):

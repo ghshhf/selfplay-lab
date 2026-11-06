@@ -92,7 +92,8 @@ try:
                       FREEFORM_ACTION_NAMES, FREEFORM_ACTION_NAMES_3D,
                       FREEFORM_N_ACTIONS, FREEFORM_N_ACTIONS_3D,
                       FREEFORM_OBS_DIM, FREEFORM_OBS_DIM_3D,
-                      FREEFORM_MASS_EXTRA,
+                      FREEFORM_MASS_EXTRA, FREEFORM_WEAPON_EXTRA,
+                      FREEFORM_WEAPON_NAMES,
                       FREEFORM_EMOTION_EXTRA,
                       FreeformArena, N_ACTIONS,
                       NeuralArena, OBS_DIM)  # noqa: E402
@@ -105,7 +106,8 @@ except ImportError:  # running as a script: python domains/neuro/train.py
                      FREEFORM_ACTION_NAMES, FREEFORM_ACTION_NAMES_3D,
                      FREEFORM_N_ACTIONS, FREEFORM_N_ACTIONS_3D,
                      FREEFORM_OBS_DIM, FREEFORM_OBS_DIM_3D,
-                     FREEFORM_MASS_EXTRA,
+                     FREEFORM_MASS_EXTRA, FREEFORM_WEAPON_EXTRA,
+                     FREEFORM_WEAPON_NAMES,
                      FREEFORM_EMOTION_EXTRA,
                      FreeformArena, N_ACTIONS,
                      NeuralArena, OBS_DIM)  # noqa: E402
@@ -183,7 +185,8 @@ class NeuroTrainer:
                              else FREEFORM_OBS_DIM)
                             + (FREEFORM_EMOTION_EXTRA if args.emotion else 0)
                             + (FREEFORM_MASS_EXTRA
-                               if (args.mass_obs or args.rand_mass) else 0))
+                               if (args.mass_obs or args.rand_mass) else 0)
+                            + (FREEFORM_WEAPON_EXTRA if args.weapon_obs else 0))
             self.n_actions = (FREEFORM_N_ACTIONS_3D if args.arena3d
                               else FREEFORM_N_ACTIONS)
             self.reach_scale = 0.86
@@ -199,6 +202,10 @@ class NeuroTrainer:
         # evade payoff is opt-in because it measured worse than no shaping.
         self.env_cfg = None
         self.eval_env_cfg = None
+        # Loadout: (seat0 weapon, seat1 weapon).  It is a property of the body,
+        # not of the opponent policy, so both training and evaluation use the
+        # same tuple and the agent is randomly seated on either body.
+        self.weapons = tuple(getattr(args, "weapons", ("none", "none")))
         if args.env == "freeform":
             cfg = {}
             if args.physics:
@@ -209,6 +216,8 @@ class NeuroTrainer:
                 cfg["evade_reward"] = float(args.evade_reward)
             if args.mass_obs:
                 cfg["mass_obs"] = True
+            if args.weapon_obs:
+                cfg["weapon_obs"] = True
             if args.rand_mass:
                 # Training resamples both bodies; evaluation stays on the
                 # fixed match-up given by --mass0/--mass1.
@@ -217,12 +226,15 @@ class NeuroTrainer:
                 cfg.pop("mass1", None)
                 cfg["rand_mass"] = [lo, hi]
                 cfg["mass_obs"] = True
-                ev = dict(cfg)
-                ev.pop("rand_mass")
-                if args.physics and (args.mass0 != 70.0
-                                     or args.mass1 != 70.0):
-                    ev["mass0"], ev["mass1"] = float(args.mass0), float(args.mass1)
-                self.eval_env_cfg = ev or None
+            # Evaluation must agree with training about the observation shape
+            # and the reward switches; only the curriculum resampling is
+            # dropped, so the holdout is a fixed match-up.
+            ev = dict(cfg)
+            ev.pop("rand_mass", None)
+            if (args.rand_mass and args.physics
+                    and (args.mass0 != 70.0 or args.mass1 != 70.0)):
+                ev["mass0"], ev["mass1"] = float(args.mass0), float(args.mass1)
+            self.eval_env_cfg = ev or None
             if cfg:
                 self.env_cfg = cfg
 
@@ -509,6 +521,7 @@ class NeuroTrainer:
                                    emotion=self.args.emotion,
                                    physics=self.args.physics,
                                    arena3d=self.args.arena3d,
+                                   weapons=self.weapons,
                                    env_cfg=self.env_cfg)
             o0, o1 = arena.reset(seed)
             while True:
@@ -538,6 +551,14 @@ class NeuroTrainer:
             ScriptedOpponent(SCRIPTED_GENES[0], reach_scale=self.reach_scale),
             ScriptedOpponent(SCRIPTED_GENES[1], reach_scale=self.reach_scale),
         ]
+
+        def expert(f, o):
+            # KICK == 3.  The body knows whether it has that button; the expert
+            # must too, or a polearm clone learns to mash a dead action.
+            return int(heuristic_action(o, pocket=pocket,
+                                        reach=f.max_reach(),
+                                        has_kick=3 in f.attacks()))
+
         for i in range(self.args.bc_episodes):
             seed = int(demo_rng.integers(2 ** 31))
             kind = i % (len(pool) + 1)
@@ -546,6 +567,7 @@ class NeuroTrainer:
                                        start_gap=gap, emotion=self.args.emotion,
                                        physics=self.args.physics,
                                        arena3d=self.args.arena3d,
+                                       weapons=self.weapons,
                                        env_cfg=self.env_cfg)
                 o0, o1 = arena.reset(seed)
                 opp = None
@@ -554,13 +576,13 @@ class NeuroTrainer:
                     opp.reset(int(demo_rng.integers(2 ** 31)))
                 while True:
                     if side == 0:
-                        a0 = int(heuristic_action(o0, pocket=pocket))
+                        a0 = expert(arena.env.p0, o0)
                         a1 = (opp.act(arena.env.p1, arena.env.p0, o1) if opp
-                              else int(heuristic_action(o1, pocket=pocket)))
+                              else expert(arena.env.p1, o1))
                     else:
                         a0 = (opp.act(arena.env.p0, arena.env.p1, o0) if opp
-                              else int(heuristic_action(o0, pocket=pocket)))
-                        a1 = int(heuristic_action(o1, pocket=pocket))
+                              else expert(arena.env.p0, o0))
+                        a1 = expert(arena.env.p1, o1)
                     me = o0 if side == 0 else o1
                     me_act = a0 if side == 0 else a1
                     n0, n1, r0, r1, done, _info = arena.step(a0, a1)
@@ -700,6 +722,7 @@ class NeuroTrainer:
                             emotion=self.args.emotion,
                             physics=self.args.physics,
                             arena3d=self.args.arena3d,
+                            weapons=self.weapons,
                             env_cfg=self.env_cfg)
         o0, o1 = arena.reset(seed)
         side = int(self.rng.integers(2))
@@ -876,6 +899,7 @@ class NeuroTrainer:
         # A fixed seed suite, independent of the training RNG, so the same
         # checkpoint is always scored on the same matches.
         outcomes = []
+        outcomes_by_seat = ([], [])
         margins = []
         frames = []
         clashes = []
@@ -902,6 +926,7 @@ class NeuroTrainer:
                                     emotion=self.args.emotion,
                                     physics=self.args.physics,
                                     arena3d=self.args.arena3d,
+                                    weapons=self.weapons,
                                     env_cfg=self.eval_env_cfg)
                 o0, o1 = arena.reset(seed)
                 info = {"winner": -1}
@@ -921,7 +946,12 @@ class NeuroTrainer:
                     if done:
                         break
                 w = int(info.get("winner", -1))
-                outcomes.append(0.5 if w < 0 else (1.0 if w == side else 0.0))
+                outcome = 0.5 if w < 0 else (1.0 if w == side else 0.0)
+                outcomes.append(outcome)
+                # Per-seat win rates matter for asymmetric loadouts: the same
+                # policy occupies each body half the games, and the armed and
+                # unarmed seats are two different match-ups.
+                outcomes_by_seat[side].append(outcome)
                 hp = info.get("hp")
                 if hp is not None and len(hp) == 2:
                     margins.append((float(hp[side]) - float(hp[1 - side]))
@@ -969,6 +999,12 @@ class NeuroTrainer:
             "act_hist0": hists[0], "act_hist1": hists[1],
             "games": len(outcomes),
             "outcomes": outcomes,
+            "win0": (float(np.mean(outcomes_by_seat[0])
+                           ) if outcomes_by_seat[0] else 0.0),
+            "win1": (float(np.mean(outcomes_by_seat[1])
+                           ) if outcomes_by_seat[1] else 0.0),
+            "games0": len(outcomes_by_seat[0]),
+            "games1": len(outcomes_by_seat[1]),
         }
 
     # --------------------------------------------------------------- training
@@ -1286,6 +1322,10 @@ class NeuroTrainer:
             "eval_evades": round(float(holdout.get("evades", 0.0)), 2),
             "eval_act_hist0": holdout.get("act_hist0"),
             "eval_act_hist1": holdout.get("act_hist1"),
+            "eval_win0": round(float(holdout.get("win0", 0.0)), 4),
+            "eval_win1": round(float(holdout.get("win1", 0.0)), 4),
+            "eval_games0": int(holdout.get("games0", 0)),
+            "eval_games1": int(holdout.get("games1", 0)),
             "arch_wins": (None if arch is None else {
                 k: round(float(v), 3) for k, v in arch.items()}),
             "arch_min_win": (None if arch is None
@@ -1455,6 +1495,14 @@ def build_argparser():
                     help="freeform + --physics: resample both weight classes "
                          "uniformly in [LO,HI] every episode (implies "
                          "--mass-obs); evaluation stays at --mass0/--mass1")
+    ap.add_argument("--weapons", nargs=2, choices=FREEFORM_WEAPON_NAMES,
+                    default=("none", "none"),
+                    metavar=("SEAT0", "SEAT1"),
+                    help="freeform loadout: weapon carried by each seat "
+                         "(javelin has no freeform geometry and is rejected)")
+    ap.add_argument("--weapon-obs", action="store_true",
+                    help="freeform: append [self weapon id, opponent weapon id] "
+                         "to the observation (needed for asymmetric loadouts)")
     ap.add_argument("--fitness", choices=("win", "margin"), default="win",
                     help="selection signal for PBT: binary win rate, or the "
                          "continuous health margin (hp difference / 100)")
