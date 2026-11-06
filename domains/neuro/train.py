@@ -53,6 +53,7 @@ try:
                       FREEFORM_ACTION_NAMES, FREEFORM_ACTION_NAMES_3D,
                       FREEFORM_N_ACTIONS, FREEFORM_N_ACTIONS_3D,
                       FREEFORM_OBS_DIM, FREEFORM_OBS_DIM_3D,
+                      FREEFORM_MASS_EXTRA,
                       FREEFORM_EMOTION_EXTRA,
                       FreeformArena, N_ACTIONS,
                       NeuralArena, OBS_DIM)  # noqa: E402
@@ -65,6 +66,7 @@ except ImportError:  # running as a script: python domains/neuro/train.py
                      FREEFORM_ACTION_NAMES, FREEFORM_ACTION_NAMES_3D,
                      FREEFORM_N_ACTIONS, FREEFORM_N_ACTIONS_3D,
                      FREEFORM_OBS_DIM, FREEFORM_OBS_DIM_3D,
+                     FREEFORM_MASS_EXTRA,
                      FREEFORM_EMOTION_EXTRA,
                      FreeformArena, N_ACTIONS,
                      NeuralArena, OBS_DIM)  # noqa: E402
@@ -140,7 +142,8 @@ class NeuroTrainer:
             self.arena_cls = FreeformArena
             self.obs_dim = ((FREEFORM_OBS_DIM_3D if args.arena3d
                              else FREEFORM_OBS_DIM)
-                            + (FREEFORM_EMOTION_EXTRA if args.emotion else 0))
+                            + (FREEFORM_EMOTION_EXTRA if args.emotion else 0)
+                            + (FREEFORM_MASS_EXTRA if args.mass_obs else 0))
             self.n_actions = (FREEFORM_N_ACTIONS_3D if args.arena3d
                               else FREEFORM_N_ACTIONS)
             self.reach_scale = 0.86
@@ -163,6 +166,8 @@ class NeuroTrainer:
                     cfg["mass0"], cfg["mass1"] = m0, m1
             if args.evade_reward > 0.0:
                 cfg["evade_reward"] = float(args.evade_reward)
+            if args.mass_obs:
+                cfg["mass_obs"] = True
             if cfg:
                 self.env_cfg = cfg
 
@@ -1354,6 +1359,9 @@ def build_argparser():
                     help="freeform + --arena3d: shaping paid to a fighter whose "
                          "side-hop made an active swing whiff (default 0 = off; "
                          "0.8 measured worse than off, see FINDINGS 22.5)")
+    ap.add_argument("--mass-obs", action="store_true",
+                    help="freeform: append [self mass, opponent mass] to the "
+                         "observation (needed when --mass0 != --mass1)")
     ap.add_argument("--fitness", choices=("win", "margin"), default="win",
                     help="selection signal for PBT: binary win rate, or the "
                          "continuous health margin (hp difference / 100)")

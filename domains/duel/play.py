@@ -463,6 +463,8 @@ def main(argv=None):
                     default=0.0,
                     help="3D only: payoff for a side-hop that made an active "
                          "swing whiff (off by default)")
+    ap.add_argument("--mass-obs", action="store_true",
+                    help="append [self mass, opponent mass] to the observation")
     ap.add_argument("--json", type=str, default="")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
@@ -472,6 +474,8 @@ def main(argv=None):
         env_cfg["mass0"], env_cfg["mass1"] = args.mass0, args.mass1
     if args.evade_reward > 0.0:
         env_cfg["evade_reward"] = float(args.evade_reward)
+    if args.mass_obs:
+        env_cfg["mass_obs"] = True
     env_cfg = env_cfg or None
     arena = F.FreeformDuel(max_frames=args.max_frames, emotion=args.emotion,
                            physics=args.physics, env_cfg=env_cfg,
@@ -485,7 +489,8 @@ def main(argv=None):
         opp = NeuralOpponent(ckpt, seed=args.seed, deterministic=True,
                              obs_dim=(F.OBS_DIM_3D if args.arena3d
                                       else F.OBS_DIM)
-                             + (F.EMOTION_EXTRA if args.emotion else 0),
+                             + (F.EMOTION_EXTRA if args.emotion else 0)
+                             + (F.MASS_EXTRA if args.mass_obs else 0),
                              n_actions=(F.N_ACTIONS_3D if args.arena3d
                                         else F.N_ACTIONS))
     elif args.opponent == "scripted":

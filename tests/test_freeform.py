@@ -71,6 +71,24 @@ class TestDimensions(unittest.TestCase):
         self.assertIn(limbs.FLYING, TECH)
 
 
+class TestMassObservation(unittest.TestCase):
+    def test_mass_is_optional_and_ordered_self_then_opponent(self):
+        blind = FreeformDuel(seed=0, max_frames=300, physics=True,
+                             env_cfg={"mass0": 50.0, "mass1": 100.0})
+        o0, _o1 = blind.reset(0)
+        self.assertEqual(len(o0), OBS_DIM)
+
+        aware = FreeformDuel(seed=0, max_frames=300, physics=True,
+                             env_cfg={"mass0": 50.0, "mass1": 100.0,
+                                      "mass_obs": True})
+        o0, o1 = aware.reset(0)
+        self.assertEqual(len(o0), OBS_DIM + 2)
+        self.assertAlmostEqual(float(o0[-2]), 50.0 / 140.0, places=5)
+        self.assertAlmostEqual(float(o0[-1]), 100.0 / 140.0, places=5)
+        self.assertAlmostEqual(float(o1[-2]), 100.0 / 140.0, places=5)
+        self.assertAlmostEqual(float(o1[-1]), 50.0 / 140.0, places=5)
+
+
 class TestVerticalPhysics(unittest.TestCase):
     def test_jump_arc_and_landing(self):
         env = freeze(0.9)

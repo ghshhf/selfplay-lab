@@ -85,6 +85,7 @@ ACTION_NAMES_3D = ACTION_NAMES + ("SIDESTEP",)
 Z_LINE = 0.15            # inside this band a sidestep goes outward
 Z_HIT_WIDTH = 0.32       # depth offset that makes a straight attack whiff
 SWEEP_Z_WIDTH = 0.55     # a lateral sweep still connects this far off the line
+MASS_EXTRA = 2           # +[self mass, opponent mass] when mass_obs is on
 SIDESTEP_V = 3.0         # m/s
 SIDESTEP_FRAMES = 9      # out 9 frames, back 9: 0.45 m, 18-frame commitment
 DEPTH_HALF = 1.2         # arena half-depth in metres
@@ -160,6 +161,10 @@ class FreeformDuel(ArticulatedDuel):
         # Off by default: a 40-round A/B showed the shaping makes 3D worse
         # (.375 vs .500), see FINDINGS 22.5.  Opt in with --evade-reward.
         self.evade_reward = float(ec.get("evade_reward", 0.0))
+        # Weight class is part of the body, so a shared policy cannot tell
+        # whether it is driving the 50 kg or the 100 kg fighter unless mass
+        # is in the observation.  Off by default to keep old obs shapes.
+        self.mass_obs = bool(ec.get("mass_obs", False))
         super().__init__(*args, **kwargs)
 
     def reset(self, seed=None):
@@ -335,6 +340,10 @@ class FreeformDuel(ArticulatedDuel):
         if self.emotion:
             extra = np.concatenate([
                 extra, me.affect.vector(), other.affect.vector()])
+        if self.mass_obs:
+            extra = np.concatenate([extra, np.array([
+                me.mass / 140.0, other.mass / 140.0,
+            ], dtype=np.float32)])
         return np.concatenate([base, extra])
 
     # -------------------------------------------------------------------- 3D

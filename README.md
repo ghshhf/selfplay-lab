@@ -22,7 +22,7 @@
 | **duel** | 两个火柴人徒手对打（纯 numpy 物理） | 9 维基因（武器/攻击性/格挡/踢/距离/反应/待机/捡道具/绕陷阱） | 198 | Elo 制 | fit 0.508 → 1.126，Elo 1573，流派「反击×20」 |
 | **sgs** | 三国杀式卡牌单挑 | 4 维基因（攻击性/防守/回血/距离） | 2670 | Lv4（4 维全开） | fit 0.660 —— **零满分，还在爬** |
 | **gomoku** | 五子棋 15×15，对手是 Rapfi（Elo 3073） | 双头网络 48 通道（policy 225 + value 1）+ VCF 搜索 | 300+ 局实测 | 固定强敌 | **0 胜 / 4.9%**，存活 25.5 → **48.2 手** |
-| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞，`--env freeform` 再加竖直轴、跳跃/下蹲、替身术、防御槽、情绪层与 `--physics` 刚体物理 | 15/23/35 维观测（`--emotion` 再 +8）→ MLP(64) → 6/9 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
+| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞，`--env freeform` 再加竖直轴、跳跃/下蹲、替身术、防御槽、情绪层与 `--physics` 刚体物理 | 15/23/35 维观测（`--emotion` 再 +8，`--mass-obs` 再 +2）→ MLP(64) → 6/9 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
 
 > 代数为各域 `evolve.log` / `progress.tsv` 的实时值，截至 2026-10-29 22:10；gomoku 为 2026-10-30 凌晨实测。
 > 前三个域当时都在后台跑，数字会继续长。
@@ -177,6 +177,7 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 | 冲量交换 | 命中按伤害给防守方冲量，进攻方吃 22% 反冲 | 重击会把两个人同时推开 |
 | Hitstop | 按伤害/爆头给 1–6 帧全体冻结（计时器与情绪都不走） | 打击感来自"停"，不是数字跳 |
 | 身位分离 | 按逆质量加权推开并消解接近速度 | 撞进更重的人，被推开的是你 |
+| 体重观测 | `--mass-obs`：观测尾部追加 `[自己体重, 对手体重]/140`（+2 维，默认关） | 50 kg vs 100 kg 对局中，轻量席位从 .250 提到 .528（23.3） |
 
 质量/摩擦/反弹/冲量都是纯函数，单测不依赖环境；`--physics` 默认关闭，
 旧的 2D 代码路径逐字不变。实测见 FINDINGS 第二十、二十一节。
@@ -458,6 +459,11 @@ python domains/neuro/train.py --env freeform --emotion --entropy-coef 0.05 \
 python domains/neuro/train.py --env freeform --latent-world --latent-dim 8 \
     --entropy-coef 0.05 --iterations 8 --episodes 6 --out-dir runs/neuro_latent
 
+# 异质量对局：把体重写进观测（+2 维），否则轻量席位在蒙眼开车（23.3）
+python domains/neuro/train.py --env freeform --physics \
+    --mass0 50 --mass1 100 --mass-obs --iterations 40 --episodes 4 \
+    --eval-episodes 12 --out-dir runs/neuro_mass
+
 # 让策略直接吃学到的 8 维隐向量（而不是 35 维手工特征）
 python domains/neuro/train.py --env freeform --latent-policy --latent-dim 8 \
     --iterations 15 --episodes 5 --out-dir runs/neuro_latent_policy
@@ -497,7 +503,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 194 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级、3D 几何/纵深侧移/错线挥空/侧跳横扫/evade 兑现、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
+python -m unittest discover -s tests -v   # 195 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级/体重观测、3D 几何/纵深侧移/错线挥空/侧跳横扫/evade 兑现、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
 ```
 
 ---
@@ -535,7 +541,7 @@ domains/
            diag.py      单局诊断（逐手看命中哪道闸门）
            results/     成果：逐局记录、训练日志、两个关键权重、A/B 原始记录
            logs/        遗传搜索版（路线 A）的历史运行日志
-  neuro/   env.py       把 duel / articulated / freeform 包装成 15 / 23 / 35 维观测（情绪 +8）、6 / 9 动作的环境
+  neuro/   env.py       把 duel / articulated / freeform 包装成 15 / 23 / 35 维观测（情绪 +8、质量 +2）、6 / 9 动作的环境
            opponents.py random / scripted / 冻结快照 对手池 + BC 专家
            train.py     BC 预热 + PPO + league + 世界模型 + health + resume
            selfevolve.py 零数据自进化：对手池、胜率 EMA、PFSP / 学习进度采样、基因变异
