@@ -65,20 +65,20 @@ PART_LABEL = {"head": "头", "torso": "躯干", "leg": "腿", "guard": "格挡"}
 # ---------------------------------------------------------------- opponents
 class NeuralOpponent:
     def __init__(self, ckpt: Path, seed: int = 0, deterministic: bool = True,
-                 obs_dim: int = F.OBS_DIM):
+                 obs_dim: int = F.OBS_DIM, n_actions: int = F.N_ACTIONS):
         state = json.loads((ckpt / "state.json").read_text(encoding="utf-8"))
         arrays = np.load(ckpt / "state.npz")
         meta = np.asarray(arrays["agent__meta"]).tolist()
-        obs_dim_ckpt, n_actions, hidden = int(meta[0]), int(meta[1]), int(meta[2])
-        if (obs_dim_ckpt, n_actions) != (obs_dim, F.N_ACTIONS):
+        obs_dim_ckpt, act_ckpt, hidden = int(meta[0]), int(meta[1]), int(meta[2])
+        if (obs_dim_ckpt, act_ckpt) != (obs_dim, n_actions):
             raise SystemExit(
                 "checkpoint expects %d obs / %d actions, this build is %d / %d; "
                 "retrain it with: python domains/neuro/train.py --env freeform "
-                "%s--out-dir %s" % (obs_dim_ckpt, n_actions, obs_dim,
-                                    F.N_ACTIONS,
+                "%s--out-dir %s" % (obs_dim_ckpt, act_ckpt, obs_dim,
+                                    n_actions,
                                     "--emotion " if obs_dim > F.OBS_DIM else "",
                                     ckpt))
-        self.agent = PPOAgent(obs_dim_ckpt, n_actions, hidden=hidden,
+        self.agent = PPOAgent(obs_dim_ckpt, act_ckpt, hidden=hidden,
                               cfg=PPOConfig(), seed=seed)
         self.agent.load_state_dict({k: arrays[k] for k in arrays.files}, "agent")
         self.rng = np.random.default_rng(seed)
@@ -264,7 +264,9 @@ def render(env, last: str, agent_label: str) -> str:
         grid[height - 1][x] = "─"
     spr = {"PLAYER": "O", "AGENT": "#"}
     for f, tag in ((p0, "PLAYER"), (p1, "AGENT")):
-        gx = int(round((f.x + half) / (2 * half) * (width - 1)))
+        # Depth is a screen-space shift, the cheapest readable projection:
+        # a sidestepped fighter visibly leaves the line without a 3D engine.
+        gx = int(round((f.x + f.z * 0.5 + half) / (2 * half) * (width - 1)))
         gy = int(round((1.78 - f.y) / 1.78 * (height - 2)))
         char = "o" if f.state == DUCK else spr[tag]
         if f.state == S_ATTACK:
@@ -284,17 +286,26 @@ def render(env, last: str, agent_label: str) -> str:
         out.append("  对手  %s" % mood(p1))
     out.append("  t=%5.2fs  x=%+.2f/%+.2f  y=%.2f/%.2f  %s"
                % (env.frames / 60.0, p0.x, p1.x, p0.y, p1.y, last))
+    if getattr(env, "arena3d", False):
+        out.append("  z=%+.2f/%+.2f  %s"
+                   % (p0.z, p1.z,
+                      "错开攻击线" if env._off_line(p0, p1) else "同线"))
     out.append("  ┌" + " " * width + "┐")
     for row in grid:
         out.append("  │" + "".join(row) + "│")
     out.append("  └" + " " * width + "┘")
-    out.append("  d/fwd  a/back  j 直拳  k 踢  s 下蹲  space 跳  l 格挡  e 替身  q 退出")
+    if getattr(env, "arena3d", False):
+        out.append("  d/fwd  a/back  j 直拳  k 踢  s 下蹲  space 跳  l 格挡  "
+                   "e 替身  w 侧移  q 退出")
+    else:
+        out.append("  d/fwd  a/back  j 直拳  k 踢  s 下蹲  space 跳  l 格挡  "
+                   "e 替身  q 退出")
     return "\n".join(out)
 
 
 KEYMAP = {
     "d": FWD, "j": PUNCH, "k": KICK, "s": DUCK, "l": BLOCK,
-    " ": JUMP, "a": BACK, "f": FWD, "e": F.SUB,
+    " ": JUMP, "a": BACK, "f": FWD, "e": F.SUB, "w": F.SIDESTEP,
 }
 
 
@@ -441,6 +452,8 @@ def main(argv=None):
                          "with --emotion)")
     ap.add_argument("--physics", action="store_true",
                     help="enable mass/friction/wall-bounce/hitstop physics")
+    ap.add_argument("--arena3d", action="store_true",
+                    help="add the depth axis, SIDESTEP and z-aware hits")
     ap.add_argument("--mass0", type=float, default=70.0,
                     help="seat 0 weight class in kg (physics only)")
     ap.add_argument("--mass1", type=float, default=70.0,
@@ -453,7 +466,8 @@ def main(argv=None):
                if args.physics and (args.mass0 != 70.0 or args.mass1 != 70.0)
                else None)
     arena = F.FreeformDuel(max_frames=args.max_frames, emotion=args.emotion,
-                           physics=args.physics, env_cfg=env_cfg)
+                           physics=args.physics, env_cfg=env_cfg,
+                           arena3d=args.arena3d)
     if args.opponent == "neural":
         ckpt = args.ckpt if args.ckpt.exists() else None
         if ckpt is None:
@@ -461,8 +475,11 @@ def main(argv=None):
                              "domains/neuro/train.py --env freeform "
                              "--out-dir %s" % (args.ckpt, args.ckpt))
         opp = NeuralOpponent(ckpt, seed=args.seed, deterministic=True,
-                             obs_dim=F.OBS_DIM + (
-                                 F.EMOTION_EXTRA if args.emotion else 0))
+                             obs_dim=(F.OBS_DIM_3D if args.arena3d
+                                      else F.OBS_DIM)
+                             + (F.EMOTION_EXTRA if args.emotion else 0),
+                             n_actions=(F.N_ACTIONS_3D if args.arena3d
+                                        else F.N_ACTIONS))
     elif args.opponent == "scripted":
         opp = ScriptedOpponent({"aggr": 0.6, "guard": 0.3, "kick": 0.5,
                                 "dist": 1.15, "duck": 0.12, "jump": 0.08},

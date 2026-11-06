@@ -130,6 +130,15 @@ class ArticulatedDuel(Duel):
     def _attack_seg(self, me):
         return limbs.attack_segments(self.pose_of(me), me.move)
 
+    def _limbs_align(self):
+        """Whether the two bodies share an attack line.
+
+        In the 2D sagittal plane they always do; the 3D arena overrides this
+        with the depth offset, so two limbs that overlap on screen but not in
+        depth do not clash.
+        """
+        return True
+
     def _guard_hit(self, opp, seg):
         if opp.state != S_BLOCK:
             return False
@@ -150,7 +159,7 @@ class ArticulatedDuel(Duel):
         hits_body = [limbs.closest_hurt(self.pose_of(opp), seg)[2] <= 0.0
                      for (_me, opp, _idx, seg) in pending]
 
-        if len(pending) == 2 and not any(hits_body) \
+        if len(pending) == 2 and not any(hits_body) and self._limbs_align() \
                 and limbs.capsule_overlap(pending[0][3], pending[1][3]):
             for (me, _opp, _idx, _seg) in pending:
                 me.landed = True

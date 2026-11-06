@@ -32,10 +32,18 @@ hits, so the escape competes with the rest of the kit instead of being free.
 Eight actions -> nine, 23 observations -> 33 (height and vertical speed for
 both fighters, two duck flags, chakra and substitution cooldown for both).
 No scripting of *when* to use them; the policy has to find that itself.
+
+With ``arena3d=True`` the sagittal plane gains a depth axis: ``Fighter.z/vz``,
+a tenth action ``SIDESTEP`` (a committed 18-frame side-hop: 9 frames out,
+9 back, 0.45 m), depth-aware hit detection (an attack whiffs when the bodies
+are more than 0.32 m apart in z), and four extra observations.  The 2D path
+is byte-for-byte unchanged when the flag is off -- z stays zero and the
+dimensions stay 35/9.
 """
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 
@@ -50,19 +58,37 @@ try:  # package import
                        S_KO, S_DUCK, S_JUMP, FWD, BACK, BLOCK, IDLE, PUNCH,
                        KICK, BODY_GAP)
     from .articulated import ArticulatedDuel, HIGH_KICK_SWITCH
-    from . import limbs, physics
+    from . import limbs, physics, space3d
 except ImportError:  # script import
     from duel import (FPS, WALK_SPEED, S_IDLE, S_ATTACK, S_BLOCK, S_HURT,
                       S_KO, S_DUCK, S_JUMP, FWD, BACK, BLOCK, IDLE, PUNCH,
                       KICK, BODY_GAP)
     from articulated import ArticulatedDuel, HIGH_KICK_SWITCH
-    import limbs, physics
+    import limbs, physics, space3d
 
 JUMP, DUCK, SUB = 6, 7, 8
 N_ACTIONS = 9
 ACTION_NAMES = ("FWD", "BACK", "PUNCH", "KICK", "BLOCK", "IDLE",
                 "JUMP", "DUCK", "SUB")
 S_SUB = 8
+
+# ---- third axis (--arena3d) ------------------------------------------------
+# A sidestep moves the body out of the attack line without changing the
+# distance.  It is a committed 18-frame side-hop (out 9 frames, back 9) rather
+# than a persistent offset: without the automatic return, a 1-D fight would
+# turn into two parallel duels that can never touch -- and a 35-frame manual
+# return could not punish the whiff it had just created.
+SIDESTEP = 9
+S_SIDESTEP = 9
+N_ACTIONS_3D = 10
+ACTION_NAMES_3D = ACTION_NAMES + ("SIDESTEP",)
+Z_LINE = 0.15            # inside this band a sidestep goes outward
+Z_HIT_WIDTH = 0.32       # depth offset that makes a straight attack whiff
+SIDESTEP_V = 3.0         # m/s
+SIDESTEP_FRAMES = 9      # out 9 frames, back 9: 0.45 m, 18-frame commitment
+DEPTH_HALF = 1.2         # arena half-depth in metres
+Z_DECEL = physics.KINETIC_MU * physics.GRAVITY
+OBS_DIM_3D = 39          # 35 + z / vz for both fighters
 
 CHAKRA_MAX = 100.0
 CHAKRA_REGEN = 0.6        # per frame -> full bar in ~2.8 s
@@ -123,6 +149,13 @@ EMOTION_EXTRA = 8   # four affect dims for each fighter
 
 
 class FreeformDuel(ArticulatedDuel):
+    def __init__(self, *args, arena3d=False, **kwargs):
+        # Set before Duel.__init__, whose reset()/obs reads both.
+        self.arena3d = bool(arena3d)
+        ec = dict(kwargs.get("env_cfg") or {})
+        self.depth_half = float(ec.get("depth", DEPTH_HALF))
+        super().__init__(*args, **kwargs)
+
     def reset(self, seed=None):
         self.jumps = 0
         self.low_hits = 0
@@ -134,6 +167,7 @@ class FreeformDuel(ArticulatedDuel):
         self.counters = 0
         self.wall_bounces = 0
         self.wall_slams = 0
+        self.sidesteps = 0
         self.hitstop = 0
         self.knockback_peak = 0.0
         self._slam_rewards = [0.0, 0.0]
@@ -143,6 +177,9 @@ class FreeformDuel(ArticulatedDuel):
             f.sub_cd = 0
             f.invuln = 0
             f.guard = GUARD_MAX
+            f.z = 0.0
+            f.vz = 0.0
+            f.side_dir = 1.0
             if self.physics:
                 f.mass_speed = physics.mass_speed_factor(f.mass)
         return self._obs()
@@ -166,9 +203,12 @@ class FreeformDuel(ArticulatedDuel):
         if act == SUB:
             self._try_substitution(me, opp)
             return
-        if me.state in (S_ATTACK, S_HURT, S_SUB):
+        if me.state in (S_ATTACK, S_HURT, S_SUB, S_SIDESTEP):
             return
 
+        if act == SIDESTEP:
+            self._try_sidestep(me)
+            return
         if act == JUMP:
             if me.y <= 0.0:
                 self.jumps += 1
@@ -246,16 +286,17 @@ class FreeformDuel(ArticulatedDuel):
         new_x = float(np.clip(opp.x + facing * SUB_DIST, -self.half, self.half))
         f.x = new_x
         f.vx = 0.0
+        f.z, f.vz = 0.0, 0.0        # the swap happens on the centre line
         f.facing = 1 if opp.x >= f.x else -1
         self.subs += 1
 
     # -------------------------------------------------------------- observation
     def _fighter_obs(self, me, other):
         base = super()._fighter_obs(me, other)
-        # The base obs normalises state by 5; with DUCK/JUMP/SUB (6/7/8) that
-        # leaves the [0, 1] band, so rescale to 8 here.
-        base[3] = me.state / 8.0
-        base[9] = other.state / 8.0
+        # The base obs normalises state by 5; with DUCK/JUMP/SUB/SIDESTEP
+        # (6/7/8/9) that leaves the [0, 1] band, so rescale to 9 here.
+        base[3] = me.state / 9.0
+        base[9] = other.state / 9.0
         extra = np.array([
             me.y / 2.0, me.vy / 4.0,
             other.y / 2.0, other.vy / 4.0,
@@ -268,10 +309,65 @@ class FreeformDuel(ArticulatedDuel):
             getattr(me, "guard", GUARD_MAX) / GUARD_MAX,
             getattr(other, "guard", GUARD_MAX) / GUARD_MAX,
         ], dtype=np.float32)
+        if self.arena3d:
+            extra = np.concatenate([extra, np.array([
+                me.z / self.depth_half, me.vz / 4.0,
+                other.z / self.depth_half, other.vz / 4.0,
+            ], dtype=np.float32)])
         if self.emotion:
             extra = np.concatenate([
                 extra, me.affect.vector(), other.affect.vector()])
         return np.concatenate([base, extra])
+
+    # -------------------------------------------------------------------- 3D
+    def _try_sidestep(self, me):
+        """Committed side-hop: out for 9 frames, then back for 9.
+
+        It is a complete maneuver rather than a persistent offset.  A toggle
+        that left the body displaced for 35+ frames was safe but could not
+        punish a whiff -- the opponent's recovery ended before you got back
+        into range.  Eighteen frames is long enough to read as a dodge and
+        short enough to counterattack.
+        """
+        if me.y > 0.0:
+            return
+        if abs(me.z) <= Z_LINE:
+            direction = 1.0
+        else:
+            direction = -1.0 if me.z > 0.0 else 1.0
+        me.side_dir = direction
+        me.vz = direction * SIDESTEP_V
+        me.state, me.phase, me.timer = S_SIDESTEP, "out", SIDESTEP_FRAMES
+        me.vx = 0.0
+        self.sidesteps += 1
+
+    def _step_z(self, f):
+        if not self.arena3d:
+            return
+        if f.state == S_SIDESTEP:
+            # Scripted hop profile; friction would shorten the outbound leg.
+            f.z += f.vz / FPS
+            return
+        decel = Z_DECEL / FPS
+        if abs(f.vz) <= max(decel, 0.05):
+            f.vz = 0.0
+        else:
+            f.vz -= math.copysign(decel, f.vz)
+        f.z += f.vz / FPS
+        if f.z > self.depth_half:
+            f.z, f.vz = self.depth_half, 0.0
+        elif f.z < -self.depth_half:
+            f.z, f.vz = -self.depth_half, 0.0
+
+    def _off_line(self, a, b):
+        """True when the depth gap is wide enough for a straight attack to miss."""
+        return self.arena3d and space3d.sidestep_clears(a.z, b.z, Z_HIT_WIDTH)
+
+    def bodies_separate(self):
+        return not self._off_line(self.p0, self.p1)
+
+    def _limbs_align(self):
+        return not self._off_line(self.p0, self.p1)
 
     # ---------------------------------------------------------------- physics
     def _integrate(self):
@@ -282,12 +378,14 @@ class FreeformDuel(ArticulatedDuel):
                 if f.y > 0.0 or f.vy > 0.0:
                     self.air_frames += 1
                 physics.step(f, 1.0 / FPS)
+                self._step_z(f)
                 impact = abs(f.vx)
                 if physics.collide_walls(f, self.half, self.walls,
                                          bounce=(f.state == S_HURT)):
                     self.wall_bounces += 1
                     self._wall_slam(i, f, 1 - i, impact)
-            if not self._wall_blocks(self.p0.x, self.p1.x):
+            if (not self._wall_blocks(self.p0.x, self.p1.x)
+                    and self.bodies_separate()):
                 physics.separate_pair(self.p0, self.p1, BODY_GAP)
             return
         super()._integrate()
@@ -301,6 +399,7 @@ class FreeformDuel(ArticulatedDuel):
                     f.y, f.vy = 0.0, 0.0
                     if f.state == S_JUMP:
                         f.state, f.timer = S_IDLE, 1
+            self._step_z(f)
 
     def _wall_slam(self, victim_idx, victim, attacker_idx, impact):
         """A knockback that reaches the arena wall is a second hit.
@@ -327,6 +426,16 @@ class FreeformDuel(ArticulatedDuel):
                             abs(victim.x), "wall"))
 
     def _tick(self, f):
+        if f.state == S_SIDESTEP:
+            f.timer -= 1
+            if f.timer <= 0:
+                if f.phase == "out":
+                    f.phase, f.timer = "back", SIDESTEP_FRAMES
+                    f.vz = -f.side_dir * SIDESTEP_V
+                else:
+                    f.state, f.phase, f.timer = S_IDLE, "", 1
+                    f.z, f.vz = 0.0, 0.0
+            return
         if f.state == S_SUB:
             f.timer -= 1
             if f.timer <= 0:
@@ -348,6 +457,11 @@ class FreeformDuel(ArticulatedDuel):
     # ------------------------------------------------------------------ combat
     def _hit_info(self, me, opp, seg):
         if not opp.alive or opp.state == S_KO:
+            return None
+        # A punch travels along x at the attacker's z plane.  If the defender
+        # has stepped out of that plane the limb passes through empty space,
+        # even though the 2D silhouette overlaps.
+        if self._off_line(me, opp):
             return None
         if getattr(opp, "invuln", 0) > 0:
             # The substitution window: the limb passes through empty air.
@@ -379,6 +493,7 @@ class FreeformDuel(ArticulatedDuel):
                 self.flying_hits += 1
         real = super()._apply_limb_hit(me, opp, opp_idx, part, mul, blocked,
                                        move, dmg, rewards)
+        opp.vz = 0.0        # a hit cancels any lateral movement
         if self.physics:
             # The base hit model assigns a fixed knockback speed.  With mass
             # on, overwrite it with an impulse so heavy/clean hits carry more
@@ -423,6 +538,7 @@ class FreeformDuel(ArticulatedDuel):
             "subs": self.subs, "sub_avoided": self.sub_avoided,
             "guard_breaks": self.guard_breaks, "counters": self.counters,
             "wall_bounces": self.wall_bounces, "wall_slams": self.wall_slams,
+            "sidesteps": self.sidesteps,
             "knockback_peak": round(self.knockback_peak, 3),
             "guard": (self.p0.guard, self.p1.guard),
             "hp": (self.p0.hp, self.p1.hp),

@@ -21,7 +21,9 @@ from domains.duel import limbs
 from domains.duel.duel import (S_IDLE, S_ATTACK, S_BLOCK, S_DUCK, S_JUMP,
                               S_HURT, FWD, BACK, PUNCH, KICK, BLOCK, IDLE)
 from domains.duel.freeform import (FreeformDuel, JUMP, DUCK, SUB, S_SUB,
-                                   N_ACTIONS, OBS_DIM, TECH, AIR_HEIGHT,
+                                   SIDESTEP, N_ACTIONS, OBS_DIM, OBS_DIM_3D,
+                                   N_ACTIONS_3D, ACTION_NAMES_3D, TECH,
+                                   AIR_HEIGHT, Z_HIT_WIDTH, SIDESTEP_V,
                                    JUMP_V, GRAVITY, CHAKRA_MAX, CHAKRA_REGEN,
                                    SUB_COST, SUB_DIST, SUB_COOLDOWN,
                                    GUARD_REGEN, ACTION_NAMES)
@@ -318,6 +320,72 @@ class TestSubstitution(unittest.TestCase):
         idle(env, 1, a0=PUNCH)
         idle(env, 8)
         self.assertGreater(env.p0.chakra, before + CHAKRA_REGEN * 8)
+
+
+class TestArena3D(unittest.TestCase):
+    def _env(self, dist=0.9):
+        env = FreeformDuel(seed=0, max_frames=900, start_gap=dist, arena3d=True)
+        env.reset(0)
+        env.p0.x, env.p1.x = -dist * 0.5, dist * 0.5
+        env.p0.vx = env.p1.vx = 0.0
+        env.p0.facing, env.p1.facing = 1, -1
+        env.p0.state, env.p0.timer = S_IDLE, 1
+        env.p1.state, env.p1.timer = S_IDLE, 1
+        return env
+
+    def test_space_grows_by_depth(self):
+        env = self._env()
+        o0, o1 = env.reset(0)
+        self.assertEqual(len(o0), OBS_DIM_3D)
+        self.assertEqual(len(o1), OBS_DIM_3D)
+        self.assertEqual(N_ACTIONS_3D, 10)
+        self.assertEqual(ACTION_NAMES_3D[-1], "SIDESTEP")
+
+    def test_sidestep_leaves_and_returns_to_the_line(self):
+        env = self._env()
+        idle(env, 1, a0=SIDESTEP)
+        idle(env, 7)                                  # 8 frames into the hop
+        self.assertGreater(env.p0.z, Z_HIT_WIDTH)     # out of the attack line
+        self.assertTrue(env._off_line(env.p0, env.p1))
+        idle(env, 12)                                 # hop finished
+        self.assertAlmostEqual(env.p0.z, 0.0)
+        self.assertEqual(env.p0.state, S_IDLE)
+        self.assertFalse(env._off_line(env.p0, env.p1))
+
+    def test_straight_punch_whiffs_across_depth(self):
+        env = self._env()
+        env.p1.z = 0.6
+        hp = env.p1.hp
+        idle(env, 1, a0=PUNCH)
+        idle(env, 10)
+        self.assertEqual(env.p1.hp, hp)
+        self.assertEqual(env.n_swings[0], 1)          # the swing did happen
+        env.p1.z = 0.0
+        idle(env, 25, a0=PUNCH)
+        self.assertLess(env.p1.hp, hp)
+
+    def test_separation_is_skipped_across_depth(self):
+        env = self._env(0.4)
+        env.p0.x, env.p1.x = -0.2, 0.2
+        env.p1.z = 0.6
+        idle(env, 1)
+        self.assertAlmostEqual(env.p0.x, -0.2, delta=1e-6)
+        self.assertAlmostEqual(env.p1.x, 0.2, delta=1e-6)
+
+    def test_depth_edges_stop_the_body(self):
+        env = self._env()
+        env.p0.vz = 5.0
+        idle(env, 30)
+        self.assertEqual(env.p0.z, env.depth_half)
+        self.assertEqual(env.p0.vz, 0.0)
+
+    def test_depth_is_visible_in_the_observation(self):
+        env = self._env()
+        obs0, _obs1 = env.reset(0)
+        idle(env, 1, a0=SIDESTEP)
+        idle(env, 7)
+        obs0, _obs1 = env._obs()
+        self.assertGreater(float(obs0[OBS_DIM]), 0.3)
 
 
 class TestEmotionAndGuard(unittest.TestCase):

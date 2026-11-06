@@ -110,6 +110,8 @@ class Fighter:
         # 自由二维环境用的竖直轴状态；旧环境永远停在 0
         self.y = 0.0                  # 离地高度（米，脚底为 0）
         self.vy = 0.0                 # 竖直速度
+        self.z = 0.0                  # 纵深（米）；只有 arena3d 会改变它
+        self.vz = 0.0                 # 纵深速度
         self.move = None              # 正在出的招（PUNCH/KICK）
         self.phase = ""               # windup / active / recover
         self.cooldown = 0
@@ -430,6 +432,15 @@ class Duel:
                 self._try_hit(me, opp, 1 - idx, rewards)
 
     # ---------------- 内部 ----------------
+    def bodies_separate(self):
+        """Whether body separation applies this frame.
+
+        The base duel is a line, so it always does.  A 3D arena overrides this
+        to skip separation when the two bodies are on different depth lines --
+        otherwise a sidestep would be undone by the collision solver.
+        """
+        return True
+
     def _wall_blocks(self, x0, x1):
         """x0 与 x1 之间是否被某堵墙隔开（挡移动也挡攻击）。
 
@@ -537,7 +548,8 @@ class Duel:
         # 身位分离：只挪位置，不动速度，避免注入能量。
         # 但两人之间被墙隔开时不做分离（墙挡着，不能把人推过墙）。
         d = self.p1.x - self.p0.x
-        if abs(d) < BODY_GAP and not self._wall_blocks(self.p0.x, self.p1.x):
+        if (abs(d) < BODY_GAP and not self._wall_blocks(self.p0.x, self.p1.x)
+                and self.bodies_separate()):
             sign = 1.0 if d >= 0 else -1.0
             push = (BODY_GAP - abs(d)) * 0.5
             self.p0.x -= sign * push

@@ -22,17 +22,20 @@ import freeform as F  # noqa: E402
 OBS_DIM = 15
 ARTICULATED_OBS_DIM = A.OBS_DIM
 FREEFORM_OBS_DIM = F.OBS_DIM
+FREEFORM_OBS_DIM_3D = F.OBS_DIM_3D
 FREEFORM_EMOTION_EXTRA = F.EMOTION_EXTRA
 N_ACTIONS = 6
 FREEFORM_N_ACTIONS = F.N_ACTIONS
+FREEFORM_N_ACTIONS_3D = F.N_ACTIONS_3D
 FREEFORM_ACTION_NAMES = tuple(F.ACTION_NAMES)
+FREEFORM_ACTION_NAMES_3D = tuple(F.ACTION_NAMES_3D)
 ACTION_NAMES = tuple(D.ACTION_NAMES)
 
 
 class NeuralArena:
     def __init__(self, seed=None, max_frames=1800, env_cfg=None,
                  weapons=("none", "none"), start_gap=2.2, emotion=False,
-                 physics=False):
+                 physics=False, arena3d=False):
         self.env = D.Duel(seed=seed, max_frames=max_frames, env_cfg=env_cfg,
                           weapons=weapons, start_gap=start_gap,
                           emotion=emotion, physics=physics)
@@ -61,7 +64,7 @@ class ArticulatedArena(NeuralArena):
 
     def __init__(self, seed=None, max_frames=1800, env_cfg=None,
                  weapons=("none", "none"), start_gap=2.2, emotion=False,
-                 physics=False):
+                 physics=False, arena3d=False):
         self.env = A.ArticulatedDuel(seed=seed, max_frames=max_frames,
                                      env_cfg=env_cfg, weapons=weapons,
                                      start_gap=start_gap, emotion=emotion,
@@ -73,8 +76,8 @@ class FreeformArena(NeuralArena):
 
     def __init__(self, seed=None, max_frames=1800, env_cfg=None,
                  weapons=("none", "none"), start_gap=2.2, emotion=False,
-                 physics=False):
+                 physics=False, arena3d=False):
         self.env = F.FreeformDuel(seed=seed, max_frames=max_frames,
                                   env_cfg=env_cfg, weapons=weapons,
                                   start_gap=start_gap, emotion=emotion,
-                                  physics=physics)
+                                  physics=physics, arena3d=arena3d)

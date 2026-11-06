@@ -197,8 +197,9 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 低冷静还会让防御槽掉得更快（最高 1.6×）——"手抖"是物理上真的存在，而不是文案。
 
 `metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `subs` / `sub_avoided` /
-`guard_breaks` / `counters` / `wall_bounces` / `affect`（回合末四项均值）/
-`act_hist`（策略实际按键分布），用来区分"新动作可用"和"策略真的在用"。
+`guard_breaks` / `counters` / `wall_bounces` / `wall_slams` / `sidesteps` /
+`affect`（回合末四项均值）/ `act_hist`（策略实际按键分布），
+用来区分"新动作可用"和"策略真的在用"。
 实测见 FINDINGS 第十一、十四、十九、二十节。
 
 查克拉是一条独立资源：上限 100、每帧回 0.6（约 2.8 秒回满），命中 +12、格挡成功 +4。
@@ -217,7 +218,8 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 
 2D 格斗和 3D 格斗的差别不是"多画一个轴"，而是**攻击线可以被侧移让开**：
 Tekken/Soulcalibur 的 sidestep 让同一招在距离不变时挥空。这没法用布尔标记硬塞，
-碰撞必须变成体积的。已经落地的是几何核心（有测试、暂不在热路径）：
+碰撞必须变成体积的。几何核心（`space3d.py`）与 `--arena3d` 已接进自由二维环境
+（39 维观测 / 10 动作，旧的 35 维 / 9 动作路径不变）：
 
 | 函数 | 作用 |
 |---|---|
@@ -228,9 +230,20 @@ Tekken/Soulcalibur 的 sidestep 让同一招在距离不变时挥空。这没法
 | `sidestep_clears` | 侧移是否足以离开攻击线（2D 恒为 `False`） |
 | `isometric` / `orthographic` | 把 3D 状态投回现有 2D 字符画，调试器不用重写 |
 
-路线：**几何（已完成）→ z 轴侧移动作与 z 观测 → 3D 肢体胶囊姿态 → 摄像机/渲染**。
-下一步只需要给 `Fighter` 加 `z/vz`、给动作加 `SIDESTEP`、把 `_guard_hit` 的距离判定
-换成 `space3d.capsule_distance`，2D 代码路径保持不变。
+已落地的 z 轴规则：
+
+| 规则 | 实现 | 可观测效果 |
+|---|---|---|
+| 纵深 | `Fighter.z/vz`，场地半深 1.2 m（`env_cfg["depth"]` 可改） | 撞到深度边界停住，不反弹 |
+| 侧移 | `SIDESTEP`（动作 9）是一次 18 帧的侧跳：外 9 帧 + 回 9 帧，回程自动 | 峰值错开 0.45 m；回程结束回到攻击线，可接反击 |
+| 命中 | `_hit_info` 先查 `space3d.sidestep_clears`，错开 > 0.32 m 即挥空 | 距离不变、直拳照样打不到 |
+| 肢 clash | `_limbs_align()` 让纵深错开的肢体不相撞 | 屏幕上重叠但不同深度不发生 clash |
+| 身位分离 | `bodies_separate()` 在错线时关闭 | 侧移不会被碰撞求解器推回来 |
+| 观测 | 双方 `z / depth_half`、`vz / 4`，共 +4 维 | 策略能看见自己是否离开攻击线 |
+| 渲染 | 字符画按 `x + 0.5·z` 投影并显示 `z` | 侧移在终端里可见 |
+
+路线：**几何（已完成）→ z 轴侧移动作与 z 观测（已完成）→ 3D 肢体胶囊姿态 → 摄像机/渲染**。
+实测见 FINDINGS 第二十二节。
 
 #### LLM 训练栈（`selfplay/nn/llmstack.py`）
 
@@ -417,6 +430,10 @@ python domains/neuro/train.py --env freeform --entropy-coef 0.05 \
 python domains/neuro/train.py --env freeform --physics --mass0 50 --mass1 100 \
     --iterations 20 --episodes 4 --out-dir runs/neuro_weight
 
+# 打开第三轴：39 维观测 / 10 动作（SIDESTEP）
+python domains/neuro/train.py --env freeform --physics --arena3d \
+    --iterations 20 --episodes 4 --out-dir runs/neuro_3d
+
 # 再打开情绪层（冷静/恐惧/愤怒/气势，43 维观测）
 python domains/neuro/train.py --env freeform --emotion --entropy-coef 0.05 \
     --iterations 15 --episodes 5 --out-dir runs/neuro_emo
@@ -464,7 +481,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 181 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级、3D 几何、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
+python -m unittest discover -s tests -v   # 187 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级、3D 几何/纵深侧移/错线挥空、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
 ```
 
 ---

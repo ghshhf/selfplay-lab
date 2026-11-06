@@ -50,8 +50,10 @@ AFFECT_KEYS = ("composure", "fear", "anger", "momentum")
 
 try:
     from .env import (ACTION_NAMES, ARTICULATED_OBS_DIM, ArticulatedArena,
-                      FREEFORM_ACTION_NAMES, FREEFORM_N_ACTIONS,
-                      FREEFORM_OBS_DIM, FREEFORM_EMOTION_EXTRA,
+                      FREEFORM_ACTION_NAMES, FREEFORM_ACTION_NAMES_3D,
+                      FREEFORM_N_ACTIONS, FREEFORM_N_ACTIONS_3D,
+                      FREEFORM_OBS_DIM, FREEFORM_OBS_DIM_3D,
+                      FREEFORM_EMOTION_EXTRA,
                       FreeformArena, N_ACTIONS,
                       NeuralArena, OBS_DIM)  # noqa: E402
     from .opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
@@ -60,8 +62,10 @@ try:
     from .selfevolve import SelfPlayPool, mutate_gene, random_gene  # noqa: E402
 except ImportError:  # running as a script: python domains/neuro/train.py
     from env import (ACTION_NAMES, ARTICULATED_OBS_DIM, ArticulatedArena,
-                     FREEFORM_ACTION_NAMES, FREEFORM_N_ACTIONS,
-                     FREEFORM_OBS_DIM, FREEFORM_EMOTION_EXTRA,
+                     FREEFORM_ACTION_NAMES, FREEFORM_ACTION_NAMES_3D,
+                     FREEFORM_N_ACTIONS, FREEFORM_N_ACTIONS_3D,
+                     FREEFORM_OBS_DIM, FREEFORM_OBS_DIM_3D,
+                     FREEFORM_EMOTION_EXTRA,
                      FreeformArena, N_ACTIONS,
                      NeuralArena, OBS_DIM)  # noqa: E402
     from opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
@@ -134,9 +138,11 @@ class NeuroTrainer:
             self.reach_scale = 0.86   # limb geometry is shorter than the 1-D reach
         elif args.env == "freeform":
             self.arena_cls = FreeformArena
-            self.obs_dim = FREEFORM_OBS_DIM + (
-                FREEFORM_EMOTION_EXTRA if args.emotion else 0)
-            self.n_actions = FREEFORM_N_ACTIONS
+            self.obs_dim = ((FREEFORM_OBS_DIM_3D if args.arena3d
+                             else FREEFORM_OBS_DIM)
+                            + (FREEFORM_EMOTION_EXTRA if args.emotion else 0))
+            self.n_actions = (FREEFORM_N_ACTIONS_3D if args.arena3d
+                              else FREEFORM_N_ACTIONS)
             self.reach_scale = 0.86
         else:
             self.arena_cls = NeuralArena
@@ -435,6 +441,7 @@ class NeuroTrainer:
                                    start_gap=self.args.train_gap,
                                    emotion=self.args.emotion,
                                    physics=self.args.physics,
+                                   arena3d=self.args.arena3d,
                                    env_cfg=self.env_cfg)
             o0, o1 = arena.reset(seed)
             while True:
@@ -471,6 +478,7 @@ class NeuroTrainer:
                 arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                                        start_gap=gap, emotion=self.args.emotion,
                                        physics=self.args.physics,
+                                       arena3d=self.args.arena3d,
                                        env_cfg=self.env_cfg)
                 o0, o1 = arena.reset(seed)
                 opp = None
@@ -624,6 +632,7 @@ class NeuroTrainer:
                             start_gap=self.args.train_gap,
                             emotion=self.args.emotion,
                             physics=self.args.physics,
+                            arena3d=self.args.arena3d,
                             env_cfg=self.env_cfg)
         o0, o1 = arena.reset(seed)
         side = int(self.rng.integers(2))
@@ -692,6 +701,7 @@ class NeuroTrainer:
             "counters": int(info.get("counters", 0)),
             "wall_bounces": int(info.get("wall_bounces", 0)),
             "wall_slams": int(info.get("wall_slams", 0)),
+            "sidesteps": int(info.get("sidesteps", 0)),
             "clashes": int(info.get("clashes", 0)),
             "head_hits": int(info.get("head_hits", 0)),
             "jumps": int(info.get("jumps", 0)),
@@ -719,6 +729,7 @@ class NeuroTrainer:
         counters = []
         walls = []
         slams = []
+        steps_z = []
         for k in range(n):
             name, opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
@@ -742,6 +753,7 @@ class NeuroTrainer:
             counters.append(stat["counters"])
             walls.append(stat["wall_bounces"])
             slams.append(stat["wall_slams"])
+            steps_z.append(stat["sidesteps"])
             if stat["affect"] is not None:
                 affects.append(stat["affect"])
 
@@ -751,8 +763,11 @@ class NeuroTrainer:
         for ep in episodes:
             for step in ep.steps:
                 counts[step.action] += 1
-        names = (FREEFORM_ACTION_NAMES if self.args.env == "freeform"
-                 else ACTION_NAMES)
+        if self.args.env == "freeform":
+            names = (FREEFORM_ACTION_NAMES_3D if self.args.arena3d
+                     else FREEFORM_ACTION_NAMES)
+        else:
+            names = ACTION_NAMES
         total = int(counts.sum()) or 1
         hist = {names[i]: round(float(counts[i]) / total, 3)
                 for i in range(min(len(names), self.n_actions))}
@@ -773,6 +788,7 @@ class NeuroTrainer:
             "counters": float(np.mean(counters)) if counters else 0.0,
             "wall_bounces": float(np.mean(walls)) if walls else 0.0,
             "wall_slams": float(np.mean(slams)) if slams else 0.0,
+            "sidesteps": float(np.mean(steps_z)) if steps_z else 0.0,
             "affect": (np.mean(affects, axis=0) if affects else None),
             "steps": int(sum(len(ep.steps) for ep in episodes)),
             "returns": returns,
@@ -791,6 +807,7 @@ class NeuroTrainer:
         subs = []
         walls = []
         slams = []
+        steps_z = []
         eval_rng = np.random.default_rng(0)
         for seed in range(2000, 2000 + n):
             for side in (0, 1):
@@ -804,6 +821,7 @@ class NeuroTrainer:
                                     start_gap=self.args.eval_gap,
                                     emotion=self.args.emotion,
                                     physics=self.args.physics,
+                                    arena3d=self.args.arena3d,
                                     env_cfg=self.env_cfg)
                 o0, o1 = arena.reset(seed)
                 info = {"winner": -1}
@@ -836,6 +854,7 @@ class NeuroTrainer:
                 subs.append(int(info.get("subs", 0)))
                 walls.append(int(info.get("wall_bounces", 0)))
                 slams.append(int(info.get("wall_slams", 0)))
+                steps_z.append(int(info.get("sidesteps", 0)))
         summary = summarise(outcomes, seed=0)
         margin_summary = summarise(margins, seed=0)
         return {
@@ -851,6 +870,7 @@ class NeuroTrainer:
             "subs": float(np.mean(subs)) if subs else 0.0,
             "wall_bounces": float(np.mean(walls)) if walls else 0.0,
             "wall_slams": float(np.mean(slams)) if slams else 0.0,
+            "sidesteps": float(np.mean(steps_z)) if steps_z else 0.0,
             "games": len(outcomes),
             "outcomes": outcomes,
         }
@@ -1150,6 +1170,8 @@ class NeuroTrainer:
             "wall_bounces": round(float(stats.get("wall_bounces", 0.0)), 2),
             "wall_slams": round(float(stats.get("wall_slams", 0.0)), 2),
             "eval_wall_slams": round(float(holdout.get("wall_slams", 0.0)), 2),
+            "sidesteps": round(float(stats.get("sidesteps", 0.0)), 2),
+            "eval_sidesteps": round(float(holdout.get("sidesteps", 0.0)), 2),
             "affect": (None if stats.get("affect") is None else {
                 name: round(float(value), 3) for name, value
                 in zip(AFFECT_KEYS, stats["affect"])}),
@@ -1295,6 +1317,9 @@ def build_argparser():
     ap.add_argument("--physics", action="store_true",
                     help="freeform only: mass, Coulomb friction, wall "
                          "restitution, impulse knockback and hitstop")
+    ap.add_argument("--arena3d", action="store_true",
+                    help="freeform only: add the depth axis, a SIDESTEP "
+                         "action and volumetric (z-aware) hit detection")
     ap.add_argument("--mass0", type=float, default=70.0,
                     help="freeform + --physics: weight class of seat 0 in kg")
     ap.add_argument("--mass1", type=float, default=70.0,
