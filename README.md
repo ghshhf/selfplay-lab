@@ -22,7 +22,7 @@
 | **duel** | 两个火柴人徒手对打（纯 numpy 物理） | 9 维基因（武器/攻击性/格挡/踢/距离/反应/待机/捡道具/绕陷阱） | 198 | Elo 制 | fit 0.508 → 1.126，Elo 1573，流派「反击×20」 |
 | **sgs** | 三国杀式卡牌单挑 | 4 维基因（攻击性/防守/回血/距离） | 2670 | Lv4（4 维全开） | fit 0.660 —— **零满分，还在爬** |
 | **gomoku** | 五子棋 15×15，对手是 Rapfi（Elo 3073） | 双头网络 48 通道（policy 225 + value 1）+ VCF 搜索 | 300+ 局实测 | 固定强敌 | **0 胜 / 4.9%**，存活 25.5 → **48.2 手** |
-| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞，`--env freeform` 再加竖直轴、跳跃/下蹲与替身术 | 15/23/33 维观测 → MLP(64) → 6/9 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
+| **neuro** | 同 duel 场景，双方换成神经网络策略；`--env articulated` 换成肢体胶囊碰撞，`--env freeform` 再加竖直轴、跳跃/下蹲、替身术、防御槽与情绪层 | 15/23/35 维观测（`--emotion` 再 +8）→ MLP(64) → 6/9 动作（PPO） | 按 iteration 计 | 对手池 random / scripted / 冻结快照 | BC 预热后 **vs random 1.0、vs scripted 1.0**，PPO 微调保持；health 报 `saturated` |
 
 > 代数为各域 `evolve.log` / `progress.tsv` 的实时值，截至 2026-10-29 22:10；gomoku 为 2026-10-30 凌晨实测。
 > 前三个域当时都在后台跑，数字会继续长。
@@ -93,7 +93,7 @@ neuro 域不依赖 torch，整套网络是纯 NumPy 手写的，这样它和遗�
 selfplay/nn/mlp.py         MLP + Adam + 手写反向传播 + checkpoint
 selfplay/nn/ppo.py         离散动作 PPO（GAE / clipped surrogate / entropy / value）
 selfplay/nn/world_model.py one-step 世界模型：obs + action → next obs（MSE）
-selfplay/nn/latent.py      隐空间世界模型：33 → z → 预测 → 重建 + 奖励头
+selfplay/nn/latent.py      隐空间世界模型：观测 → z → 预测 → 重建 + 奖励头
 selfplay/nn/rnd.py         RND 好奇心：固定随机目标网络，novelty = 预测误差
 selfplay/nn/pbt.py         权重空间进化：克隆 / 按张量尺度加噪 / 选择 / 变异
 selfplay/core/health.py    评估器健康判据（饱和 / 地板锁 / 缺维 / league overfit / 策略坍缩）
@@ -154,7 +154,34 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 - **下蹲中踢** → 低扫（脚心 ~0.46 m）：低于所有护体胶囊，**格挡挡不住**，但只能打到腿（0.75x）
 - **空中踢** → 飞踢：脚心升到下巴高度，9 帧起手、9 伤害（头 12.2）
 - 新增 **SUB**（动作 8，替身术）：4 帧无敌 → 瞬移到对手身后 0.9 m，消耗 40 查克拉、冷却 72 帧
-- 观测 23 → 33 维（离地高度/竖直速度、两个下蹲标记、双方查克拉与替身冷却）
+- 观测 23 → 35 维（离地高度/竖直速度、两个下蹲标记、双方查克拉/替身冷却、双方防御槽）
+
+查克拉是一条独立资源：上限 100、每帧回 0.6（约 2.8 秒回满），命中 +12、格挡成功 +4。
+所以替身不是免费翻滚，而是和进攻抢资源；被打进硬直时按 SUB 也能脱身，但落地有 6 帧硬直可被反打。
+
+**防御槽（guard meter）**：格挡仍只吃 28% 伤害，但每次挡刀按 2.4× 伤害扣防御槽；
+槽空 → 28 帧破防硬直、槽重置到 35，随后是完整的反击窗口。不复读"一直按格挡"。
+**Counter-hit**：在对手起手/收招阶段打中，伤害 ×1.35、硬直 +8 帧——惩罚乱挥，
+奖励读招（经典 footsies 规则）。
+
+**情绪层（`domains/duel/affect.py`，`--emotion`）**：每个角色有 4 个 [0,1] 的漏积分量——
+冷静 (`composure`)、恐惧 (`fear`)、愤怒 (`anger`)、气势 (`momentum`)。它们不是奖励，
+而是作为观测追加 8 维（双方各 4 维），让只看当前帧的策略拥有"这回合的情绪记忆"：
+
+| 事件 | 效果 |
+|---|---|
+| 被打中 | 恐惧/愤怒↑、冷静↓、气势清零（越疼幅度越大，爆头额外扣冷静） |
+| 打中对手 | 气势↑、冷静↑；格挡成功只小幅加怒 |
+| 挥空 | 冷静↓、愤怒↑（越打越急） |
+| 破防 | 冷静大降、恐惧/愤怒↑，气势清零 |
+| 每帧 | 恐惧/愤怒/气势按 0.995/0.992/0.985 衰减；血量 <35% 持续加恐惧 |
+| 情绪传染 | 对手越愤怒你越恐惧；对手气势越高你气势越低 |
+
+低冷静还会让防御槽掉得更快（最高 1.6×）——"手抖"是物理上真的存在，而不是文案。
+
+`metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `subs` / `sub_avoided` /
+`guard_breaks` / `counters` / `affect`（回合末四项均值）/ `act_hist`（策略实际按键分布），
+用来区分"新动作可用"和"策略真的在用"。实测见 FINDINGS 第十一、十四、十九节。
 
 查克拉是一条独立资源：上限 100、每帧回 0.6（约 2.8 秒回满），命中 +12、格挡成功 +4。
 所以替身不是免费翻滚，而是和进攻抢资源；被打进硬直时按 SUB 也能脱身，但落地有 6 帧硬直可被反打。
@@ -168,8 +195,24 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 | 飞踢 | — | 起手慢，落地即空窗 |
 | 替身 | 慢招（头踢 12 帧起手） | 40 查克拉 + 72 帧冷却，落地 6 帧可被反打 |
 
-`metrics.jsonl` 新增 `jumps` / `low_hits` / `flying_hits` / `subs` / `sub_avoided` / `act_hist`（策略实际按键分布），
-用来区分"新动作可用"和"策略真的在用"。实测见 FINDINGS 第十一、十四节。
+#### 走向 3D 的第一块地基（`domains/duel/space3d.py`）
+
+2D 格斗和 3D 格斗的差别不是"多画一个轴"，而是**攻击线可以被侧移让开**：
+Tekken/Soulcalibur 的 sidestep 让同一招在距离不变时挥空。这没法用布尔标记硬塞，
+碰撞必须变成体积的。已经落地的是几何核心（有测试、暂不在热路径）：
+
+| 函数 | 作用 |
+|---|---|
+| `Vec3` | 位置/速度，含加减、点积、归一化 |
+| `point_segment_distance` | 点—线段距离（躯干对肢体） |
+| `segment_segment_distance` | 线段—线段距离（肢体对肢体，Ericson RTCD 5.1.9） |
+| `capsule_distance` / `capsules_overlap` | 胶囊—胶囊（线段距离减两个半径） |
+| `sidestep_clears` | 侧移是否足以离开攻击线（2D 恒为 `False`） |
+| `isometric` / `orthographic` | 把 3D 状态投回现有 2D 字符画，调试器不用重写 |
+
+路线：**几何（已完成）→ z 轴侧移动作与 z 观测 → 3D 肢体胶囊姿态 → 摄像机/渲染**。
+下一步只需要给 `Fighter` 加 `z/vz`、给动作加 `SIDESTEP`、把 `_guard_hit` 的距离判定
+换成 `space3d.capsule_distance`，2D 代码路径保持不变。
 
 #### LLM 训练栈（`selfplay/nn/llmstack.py`）
 
@@ -229,9 +272,9 @@ python domains/duel/play.py --auto --rounds 8 --reaction 12 \
 ```
 
 按键：`d` 前进、`a` 后退、`j` 直拳、`k` 踢（引擎按距离/姿态自动选前踢、头踢、低扫、飞踢）、
-`s` 下蹲、`空格` 跳、`l` 格挡、`e` 替身术（40 查克拉）、`q` 退出。界面是终端字符画：两条血条 + 查克拉条 + 俯视 12 行场地。
+`s` 下蹲、`空格` 跳、`l` 格挡、`e` 替身术（40 查克拉）、`q` 退出。界面是终端字符画：两条血条 + 查克拉条 + 防御槽 + 俯视 12 行场地；加 `--emotion` 会多两行实时心态（冷静/恐惧/愤怒/气势）。
 
-`--auto` 不是"假 AI 陪你演戏"：它只读网络同样那 33 维观测，每 `--reaction` 帧（默认 12 ≈ 200 ms）
+`--auto` 不是"假 AI 陪你演戏"：它只读网络同样的观测（普通 35 维，`--emotion` 为 43 维），每 `--reaction` 帧（默认 12 ≈ 200 ms）
 才重新决策一次，不会读取引擎里的 `me.move`；判断对方踢腿只看脚的离地高度，屏幕上你也能看到。
 
 实测（10 局，`--style pressure`）：反应 12 帧时对 random 0/10、脚本 4/10、神经 0/10；
@@ -348,15 +391,19 @@ python domains/neuro/train.py --no-curriculum --out-dir runs/neuro_flat
 python domains/neuro/train.py --env articulated --bc-episodes 12 --bc-epochs 120 \
     --iterations 6 --episodes 6 --out-dir runs/neuro_art
 
-# 自由二维版本（33 维观测 / 9 动作，含替身术；熵系数调高才看得到新动作被用）
+# 自由二维版本（35 维观测 / 9 动作，含防御槽、破防与 counter-hit）
 python domains/neuro/train.py --env freeform --entropy-coef 0.05 \
     --iterations 8 --episodes 6 --out-dir runs/neuro_free
 
-# 再用 8 维隐空间世界模型做预测（33 -> 8 -> 预测 -> 重建）
+# 再打开情绪层（冷静/恐惧/愤怒/气势，43 维观测）
+python domains/neuro/train.py --env freeform --emotion --entropy-coef 0.05 \
+    --iterations 15 --episodes 5 --out-dir runs/neuro_emo
+
+# 再用 8 维隐空间世界模型做预测（观测 -> 8 -> 预测 -> 重建）
 python domains/neuro/train.py --env freeform --latent-world --latent-dim 8 \
     --entropy-coef 0.05 --iterations 8 --episodes 6 --out-dir runs/neuro_latent
 
-# 让策略直接吃学到的 8 维隐向量（而不是 33 维手工特征）
+# 让策略直接吃学到的 8 维隐向量（而不是 35 维手工特征）
 python domains/neuro/train.py --env freeform --latent-policy --latent-dim 8 \
     --iterations 15 --episodes 5 --out-dir runs/neuro_latent_policy
 
@@ -395,7 +442,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 134 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
+python -m unittest discover -s tests -v   # 153 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、3D 几何、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
 ```
 
 ---
@@ -412,7 +459,9 @@ domains/
   duel/    duel.py      物理与规则（纯 numpy）
            limbs.py     2D 矢状面肢体运动学 + 胶囊碰撞几何
            articulated.py 肢体接触版对局（23 维观测、clash、部位伤害）
-           freeform.py    自由二维版：加竖直轴、跳跃/下蹲/替身（33 维观测、9 动作）
+           freeform.py    自由二维版：加竖直轴、跳跃/下蹲/替身、防御槽、情绪（35/43 维观测、9 动作）
+           affect.py      四维情绪漏积分器（冷静/恐惧/愤怒/气势）
+           space3d.py     3D 几何：Vec3 / 线段-线段 / 胶囊 / 侧移判定 / 投影
            play.py        玩家模式：键盘操控 / 延迟玩家 vs 神经策略
            bot.py       基因 → 策略
            evolve.py    进化主循环（含 Elo 与名人堂）
@@ -431,7 +480,7 @@ domains/
            diag.py      单局诊断（逐手看命中哪道闸门）
            results/     成果：逐局记录、训练日志、两个关键权重、A/B 原始记录
            logs/        遗传搜索版（路线 A）的历史运行日志
-  neuro/   env.py       把 duel / articulated / freeform 包装成 15 / 23 / 33 维观测、6 / 9 动作的环境
+  neuro/   env.py       把 duel / articulated / freeform 包装成 15 / 23 / 35 维观测（情绪 +8）、6 / 9 动作的环境
            opponents.py random / scripted / 冻结快照 对手池 + BC 专家
            train.py     BC 预热 + PPO + league + 世界模型 + health + resume
            selfevolve.py 零数据自进化：对手池、胜率 EMA、PFSP / 学习进度采样、基因变异

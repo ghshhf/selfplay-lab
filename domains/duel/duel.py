@@ -16,6 +16,11 @@ v2（随机到底）：环境不再写死。场地宽度、障碍墙、道具、
 
 import numpy as np
 
+try:  # package import
+    from .affect import Affect
+except ImportError:  # script import
+    from affect import Affect
+
 FPS = 60
 ARENA_HALF = 4.0      # 默认场地 x ∈ [-4, 4]（可被 env_cfg 覆盖）
 BODY_GAP = 0.62       # 两人最小间距（身位），不允许穿模
@@ -119,6 +124,8 @@ class Fighter:
         self.trap_dist = 99.0         # 最近陷阱距离（无则大数）
         self.wall_to_opp = 0          # 与对手之间是否被墙隔开（0/1）
         self.wall_dx = 0.0            # 最近墙边缘相对 x（无则 0）
+        # 情绪状态（只有开启 emotion 的环境才会赋值；见 affect.py）
+        self.affect = None
 
     # ---- 只读派生量 ----
     @property
@@ -184,12 +191,13 @@ class Duel:
     """
 
     def __init__(self, seed=None, hp=MAX_HP, max_frames=1800, start_gap=2.2,
-                 env_cfg=None, weapons=("none", "none")):
+                 env_cfg=None, weapons=("none", "none"), emotion=False):
         self.rng = np.random.default_rng(seed)
         self.hp0 = float(hp)
         self.max_frames = int(max_frames)
         self.start_gap = float(start_gap)
         self.weapons = tuple(weapons)
+        self.emotion = bool(emotion)
         # 环境配置（深拷贝，避免跨局串改）
         ec = dict(env_cfg) if env_cfg else {}
         self.half = float(ec.get("half", ARENA_HALF))
@@ -212,6 +220,11 @@ class Duel:
         x1 = float(self.rng.uniform(-off, off)) + gap * 0.5
         self.p0 = Fighter(x0, +1, self.hp0, self.weapons[0])
         self.p1 = Fighter(x1, -1, self.hp0, self.weapons[1])
+        if self.emotion:
+            # Do not make emotion a free symmetry breaker: both fighters draw
+            # from the same reset RNG, so seeds stay comparable.
+            self.p0.affect = Affect(self.rng)
+            self.p1.affect = Affect(self.rng)
         self.frames = 0
         self.events = []            # (frame, move, damage, blocked, attacker_idx, hit_dist)
         self.damage_dealt = [0.0, 0.0]
@@ -226,6 +239,14 @@ class Duel:
 
     def _obs(self):
         return self.p0.obs(self.p1), self.p1.obs(self.p0)
+
+    def counter_bonus(self, me, opp):
+        """Damage multiplier and extra stun for a counter-hit.
+
+        Base duel has no phase timing beyond frames, so it does not reward
+        counters; the articulated/freeform layer overrides this.
+        """
+        return 1.0, 0
 
     # ---------------- 主步进 ----------------
     def step(self, a0, a1):
@@ -340,6 +361,9 @@ class Duel:
         for f in (self.p0, self.p1):
             self._tick(f)
 
+        # 5.5) 情绪衰减 / 低血量恐惧 / 情绪传染
+        self._affect_tick()
+
         self.frames += 1
 
         # 6) 结束判定
@@ -375,7 +399,20 @@ class Duel:
             "hits": len(self.events),
             "swings": tuple(self.n_swings),
         }
+        if self.emotion:
+            info["emotion"] = (self.p0.affect.as_dict(),
+                               self.p1.affect.as_dict())
         return rewards, done, info
+
+    def _affect_tick(self):
+        """Advance both affect states simultaneously (no update-order bias)."""
+        if not self.emotion:
+            return
+        f0, f1 = self.p0.affect, self.p1.affect
+        snap0 = (f0.fear, f0.anger, f0.momentum)
+        snap1 = (f1.fear, f1.anger, f1.momentum)
+        self.p0.affect.tick(self.p0.hp / MAX_HP, *snap1)
+        self.p1.affect.tick(self.p1.hp / MAX_HP, *snap0)
 
     def _combat(self, rewards):
         """默认命中模型：出招活跃帧内，按水平距离 + 射程判定。"""
@@ -445,18 +482,22 @@ class Duel:
         me.landed = True
         blocked = (opp.state == S_BLOCK)
         mul = me.block_mul() if blocked else 1.0
-        want = dmg * me.power_buff * mul * opp.armor_buff
+        counter_mul, counter_stun = self.counter_bonus(me, opp)
+        want = dmg * me.power_buff * mul * opp.armor_buff * counter_mul
         hp_before = opp.hp
         opp.hp = max(0.0, opp.hp - want)
         real = hp_before - opp.hp           # 只记真实掉血，最后一击的溢出不算
         self.damage_dealt[1 - opp_idx] += real
         self.events.append((self.frames, me.move, real, blocked, 1 - opp_idx, dist))
+        if getattr(me, "affect", None) is not None:
+            me.affect.hit_landed(real, blocked=blocked)
+            opp.affect.hit_taken(real, blocked=blocked)
         # 奖励：命中得分，被打扣分（格挡按比例）
         rewards[1 - opp_idx] -= real * 0.5
         rewards[opp_idx] += real * 0.8
         if not blocked:
             opp.state = S_HURT
-            opp.timer = HURT_STUN + me.hurt_add()
+            opp.timer = HURT_STUN + me.hurt_add() + counter_stun
             opp.vx = me.facing * self.knockback
             opp.phase = ""
             opp.move = None
@@ -509,6 +550,8 @@ class Duel:
                 if f.phase == "windup":
                     f.phase, f.timer = "active", active
                 elif f.phase == "active":
+                    if not f.landed and getattr(f, "affect", None) is not None:
+                        f.affect.whiffed()
                     f.phase, f.timer = "recover", recover
                 else:
                     f.state, f.phase, f.move = S_IDLE, "", None

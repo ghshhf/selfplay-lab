@@ -46,10 +46,13 @@ from selfplay.nn.pbt import PBTPopulation, clone_agent  # noqa: E402
 from selfplay.nn.rnd import RND  # noqa: E402
 from selfplay.nn.world_model import WorldModel  # noqa: E402
 
+AFFECT_KEYS = ("composure", "fear", "anger", "momentum")
+
 try:
     from .env import (ACTION_NAMES, ARTICULATED_OBS_DIM, ArticulatedArena,
                       FREEFORM_ACTION_NAMES, FREEFORM_N_ACTIONS,
-                      FREEFORM_OBS_DIM, FreeformArena, N_ACTIONS,
+                      FREEFORM_OBS_DIM, FREEFORM_EMOTION_EXTRA,
+                      FreeformArena, N_ACTIONS,
                       NeuralArena, OBS_DIM)  # noqa: E402
     from .opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
                             SCRIPTED_GENES, ScriptedOpponent,
@@ -58,7 +61,8 @@ try:
 except ImportError:  # running as a script: python domains/neuro/train.py
     from env import (ACTION_NAMES, ARTICULATED_OBS_DIM, ArticulatedArena,
                      FREEFORM_ACTION_NAMES, FREEFORM_N_ACTIONS,
-                     FREEFORM_OBS_DIM, FreeformArena, N_ACTIONS,
+                     FREEFORM_OBS_DIM, FREEFORM_EMOTION_EXTRA,
+                     FreeformArena, N_ACTIONS,
                      NeuralArena, OBS_DIM)  # noqa: E402
     from opponents import (CURRICULUM_LEVELS, RandomOpponent,  # noqa: E402
                            SCRIPTED_GENES, ScriptedOpponent,
@@ -130,7 +134,8 @@ class NeuroTrainer:
             self.reach_scale = 0.86   # limb geometry is shorter than the 1-D reach
         elif args.env == "freeform":
             self.arena_cls = FreeformArena
-            self.obs_dim = FREEFORM_OBS_DIM
+            self.obs_dim = FREEFORM_OBS_DIM + (
+                FREEFORM_EMOTION_EXTRA if args.emotion else 0)
             self.n_actions = FREEFORM_N_ACTIONS
             self.reach_scale = 0.86
         else:
@@ -418,7 +423,8 @@ class NeuroTrainer:
         for _ in range(episodes):
             seed = int(self.rng.integers(2 ** 31))
             arena = self.arena_cls(seed=seed, max_frames=max(200, self.args.max_frames // 2),
-                                   start_gap=self.args.train_gap)
+                                   start_gap=self.args.train_gap,
+                                   emotion=self.args.emotion)
             o0, o1 = arena.reset(seed)
             while True:
                 a0 = int(self.rng.integers(self.n_actions))
@@ -452,7 +458,7 @@ class NeuroTrainer:
             kind = i % (len(pool) + 1)
             for side in (0, 1):
                 arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
-                                       start_gap=gap)
+                                       start_gap=gap, emotion=self.args.emotion)
                 o0, o1 = arena.reset(seed)
                 opp = None
                 if kind < len(pool):
@@ -602,7 +608,8 @@ class NeuroTrainer:
 
     def _play(self, opponent, seed: int, collect: bool):
         arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
-                            start_gap=self.args.train_gap)
+                            start_gap=self.args.train_gap,
+                            emotion=self.args.emotion)
         o0, o1 = arena.reset(seed)
         side = int(self.rng.integers(2))
         ep = Episode()
@@ -656,12 +663,18 @@ class NeuroTrainer:
             margin = (float(hp[side]) - float(hp[1 - side])) / 100.0
         else:
             margin = 1.0 if outcome == 1.0 else (-1.0 if outcome == 0.0 else 0.0)
+        me_fighter = arena.env.p0 if side == 0 else arena.env.p1
+        affect = (me_fighter.affect.vector().copy()
+                  if getattr(me_fighter, "affect", None) is not None else None)
         return ep, {
             "outcome": outcome,
             "margin": margin,
             "frames": arena.frames,
             "return": total_reward,
             "winner": winner,
+            "affect": affect,
+            "guard_breaks": int(info.get("guard_breaks", 0)),
+            "counters": int(info.get("counters", 0)),
             "clashes": int(info.get("clashes", 0)),
             "head_hits": int(info.get("head_hits", 0)),
             "jumps": int(info.get("jumps", 0)),
@@ -684,6 +697,9 @@ class NeuroTrainer:
         flyings = []
         subs = []
         avoided = []
+        affects = []
+        breaks = []
+        counters = []
         for k in range(n):
             name, opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
@@ -703,6 +719,10 @@ class NeuroTrainer:
             flyings.append(stat["flying_hits"])
             subs.append(stat["subs"])
             avoided.append(stat["sub_avoided"])
+            breaks.append(stat["guard_breaks"])
+            counters.append(stat["counters"])
+            if stat["affect"] is not None:
+                affects.append(stat["affect"])
 
         # What the policy actually presses.  This is the only direct evidence
         # that the new degrees of freedom are being used rather than ignored.
@@ -728,6 +748,9 @@ class NeuroTrainer:
             "flying_hits": float(np.mean(flyings)) if flyings else 0.0,
             "subs": float(np.mean(subs)) if subs else 0.0,
             "sub_avoided": float(np.mean(avoided)) if avoided else 0.0,
+            "guard_breaks": float(np.mean(breaks)) if breaks else 0.0,
+            "counters": float(np.mean(counters)) if counters else 0.0,
+            "affect": (np.mean(affects, axis=0) if affects else None),
             "steps": int(sum(len(ep.steps) for ep in episodes)),
             "returns": returns,
             "act_hist": hist,
@@ -753,7 +776,8 @@ class NeuroTrainer:
                                           reach_scale=self.reach_scale)
                 opp.reset(seed * 2 + side)
                 arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
-                                    start_gap=self.args.eval_gap)
+                                    start_gap=self.args.eval_gap,
+                                    emotion=self.args.emotion)
                 o0, o1 = arena.reset(seed)
                 info = {"winner": -1}
                 while True:
@@ -1090,6 +1114,11 @@ class NeuroTrainer:
             "subs": round(float(stats.get("subs", 0.0)), 2),
             "eval_subs": round(float(holdout.get("subs", 0.0)), 2),
             "sub_avoided": round(float(stats.get("sub_avoided", 0.0)), 2),
+            "guard_breaks": round(float(stats.get("guard_breaks", 0.0)), 2),
+            "counters": round(float(stats.get("counters", 0.0)), 2),
+            "affect": (None if stats.get("affect") is None else {
+                name: round(float(value), 3) for name, value
+                in zip(AFFECT_KEYS, stats["affect"])}),
             "policy_loss": round(float(ppo["policy_loss"]), 5),
             "value_loss": round(float(ppo["value_loss"]), 5),
             "approx_kl": round(float(ppo["approx_kl"]), 5),
@@ -1226,6 +1255,9 @@ def build_argparser():
                     help="wm: latent prediction error (rewards teleports); "
                          "rnd: random-network distillation (rewards unfamiliar "
                          "states); none: disable")
+    ap.add_argument("--emotion", action="store_true",
+                    help="append four affect dims per fighter (composure, fear, "
+                         "anger, momentum); freeform only, +8 obs dims")
     ap.add_argument("--fitness", choices=("win", "margin"), default="win",
                     help="selection signal for PBT: binary win rate, or the "
                          "continuous health margin (hp difference / 100)")

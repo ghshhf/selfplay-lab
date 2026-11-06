@@ -75,6 +75,24 @@ SUB_COOLDOWN = 72
 SUB_DIST = 0.9            # metres behind the opponent
 SUB_TOTAL = SUB_STARTUP + SUB_RECOVER
 
+# Guard is a second health bar that only blocks pay into.  Holding block is
+# strong (chip damage is only 28%), so it needs a cost: a guard meter.  Empty
+# it and the next hit goes through and stuns for half a second.  This is the
+# standard "guard gauge" of 2D fighters (Street Fighter, Guilty Gear), and it
+# gives the emotion layer something to act on: a frightened fighter's hands
+# shake, so their guard drains faster.
+GUARD_MAX = 100.0
+GUARD_REGEN = 1.2         # per frame while not blocking
+GUARD_BLOCK_REGEN = 0.2   # barely recovers while turtling
+GUARD_COST = 2.4          # guard points per point of chip damage (x composure)
+GUARD_BREAK_STUN = 28     # punish window after a guard break
+GUARD_RESET = 35.0        # guard after breaking (do not instantly re-break)
+
+# Counter-hit: hitting a fighter during windup/recovery is the classic
+# footsies reward.  It makes timing matter beyond raw damage.
+COUNTER_MUL = 1.35
+COUNTER_STUN = 8
+
 GRAVITY = 9.8
 JUMP_V = 2.55          # m/s -> apex 0.33 m, ~31 frames airborne
 AIR_CONTROL = 0.55     # horizontal speed multiplier while airborne
@@ -89,7 +107,9 @@ TECH = {
     limbs.FLYING: limbs.ART_MOVES[limbs.FLYING],
 }
 
-OBS_DIM = 33   # 29 + chakra / substitution cooldown for both fighters
+OBS_DIM = 35   # 29 + chakra/sub cooldown + guard for both fighters
+GUARD_EXTRA = 2
+EMOTION_EXTRA = 8   # four affect dims for each fighter
 
 
 class FreeformDuel(ArticulatedDuel):
@@ -100,11 +120,14 @@ class FreeformDuel(ArticulatedDuel):
         self.air_frames = 0
         self.subs = 0
         self.sub_avoided = 0
+        self.guard_breaks = 0
+        self.counters = 0
         obs = super().reset(seed)
         for f in (self.p0, self.p1):
             f.chakra = CHAKRA_MAX
             f.sub_cd = 0
             f.invuln = 0
+            f.guard = GUARD_MAX
         return self._obs()
 
     # ------------------------------------------------------------------- pose
@@ -218,7 +241,12 @@ class FreeformDuel(ArticulatedDuel):
             getattr(other, "chakra", CHAKRA_MAX) / CHAKRA_MAX,
             getattr(me, "sub_cd", 0) / SUB_COOLDOWN,
             getattr(other, "sub_cd", 0) / SUB_COOLDOWN,
+            getattr(me, "guard", GUARD_MAX) / GUARD_MAX,
+            getattr(other, "guard", GUARD_MAX) / GUARD_MAX,
         ], dtype=np.float32)
+        if self.emotion:
+            extra = np.concatenate([
+                extra, me.affect.vector(), other.affect.vector()])
         return np.concatenate([base, extra])
 
     # ---------------------------------------------------------------- physics
@@ -271,6 +299,14 @@ class FreeformDuel(ArticulatedDuel):
             return None
         return part, mul, blocked, me.move, TECH[me.move][4]
 
+    def counter_bonus(self, me, opp):
+        # Hitting a windup or recovery is a counter.  Hitting an *active* limb
+        # is a trade and is handled by the clash path, so it is excluded.
+        if opp.state == S_ATTACK and opp.phase in ("windup", "recover"):
+            self.counters += 1
+            return COUNTER_MUL, COUNTER_STUN
+        return 1.0, 0
+
     def _apply_limb_hit(self, me, opp, opp_idx, part, mul, blocked, move, dmg,
                         rewards):
         if not blocked:
@@ -283,12 +319,33 @@ class FreeformDuel(ArticulatedDuel):
         me.chakra = min(CHAKRA_MAX, me.chakra + CHAKRA_HIT_GAIN)
         if blocked:
             opp.chakra = min(CHAKRA_MAX, opp.chakra + CHAKRA_BLOCK_GAIN)
+            # Fear makes the hands shake: low composure drains guard faster.
+            composure = (opp.affect.composure if getattr(opp, "affect", None)
+                         is not None else 1.0)
+            fear_mul = 1.0 + (1.0 - composure) * 0.6
+            opp.guard -= GUARD_COST * dmg * mul * fear_mul
+            if opp.guard <= 0.0:
+                self._guard_break(me, opp)
+
+    def _guard_break(self, me, opp):
+        opp.guard = GUARD_RESET
+        opp.state = S_HURT
+        opp.timer = GUARD_BREAK_STUN
+        opp.vx = me.facing * self.knockback * 0.6
+        opp.phase = ""
+        opp.move = None
+        if getattr(opp, "affect", None) is not None:
+            opp.affect.guard_break()
+        self.guard_breaks += 1
 
     # -------------------------------------------------------------------- info
     def _advance(self, a0, a1):
         for f in (self.p0, self.p1):
             if f.alive:
                 f.chakra = min(CHAKRA_MAX, f.chakra + CHAKRA_REGEN)
+                regen = (GUARD_BLOCK_REGEN if f.state == S_BLOCK
+                         else GUARD_REGEN)
+                f.guard = min(GUARD_MAX, f.guard + regen)
                 if f.sub_cd > 0:
                     f.sub_cd -= 1
                 if f.invuln > 0:
@@ -300,4 +357,7 @@ class FreeformDuel(ArticulatedDuel):
         info["air_frames"] = self.air_frames
         info["subs"] = self.subs
         info["sub_avoided"] = self.sub_avoided
+        info["guard_breaks"] = self.guard_breaks
+        info["counters"] = self.counters
+        info["guard"] = (self.p0.guard, self.p1.guard)
         return rewards, done, info

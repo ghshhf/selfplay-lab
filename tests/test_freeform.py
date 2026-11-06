@@ -24,11 +24,11 @@ from domains.duel.freeform import (FreeformDuel, JUMP, DUCK, SUB, S_SUB,
                                    N_ACTIONS, OBS_DIM, TECH, AIR_HEIGHT,
                                    JUMP_V, GRAVITY, CHAKRA_MAX, CHAKRA_REGEN,
                                    SUB_COST, SUB_DIST, SUB_COOLDOWN,
-                                   ACTION_NAMES)
+                                   GUARD_REGEN, ACTION_NAMES)
 
 
-def freeze(dist=0.9):
-    env = FreeformDuel(seed=0, max_frames=900, start_gap=dist)
+def freeze(dist=0.9, emotion=False):
+    env = FreeformDuel(seed=0, max_frames=900, start_gap=dist, emotion=emotion)
     env.reset(0)
     env.p0.x, env.p1.x = -dist * 0.5, dist * 0.5
     env.p0.vx = env.p1.vx = 0.0
@@ -61,7 +61,7 @@ class TestDimensions(unittest.TestCase):
         o0, o1 = env.reset(1)
         self.assertEqual(len(o0), OBS_DIM)
         self.assertEqual(len(o1), OBS_DIM)
-        self.assertEqual(OBS_DIM, 33)
+        self.assertEqual(OBS_DIM, 35)
         self.assertEqual(N_ACTIONS, 9)
         self.assertEqual(len(ACTION_NAMES), 9)
         self.assertIn(limbs.LOW_KICK, TECH)
@@ -317,6 +317,73 @@ class TestSubstitution(unittest.TestCase):
         idle(env, 1, a0=PUNCH)
         idle(env, 8)
         self.assertGreater(env.p0.chakra, before + CHAKRA_REGEN * 8)
+
+
+class TestEmotionAndGuard(unittest.TestCase):
+    def test_emotion_extends_observation(self):
+        env = FreeformDuel(seed=2, max_frames=300, emotion=True)
+        o0, o1 = env.reset(2)
+        self.assertEqual(len(o0), OBS_DIM + 8)
+        info = idle(env, 1)
+        self.assertIn("emotion", info)
+        for fighter in (env.p0, env.p1):
+            vec = fighter.affect.vector()
+            self.assertEqual(vec.shape, (4,))
+            self.assertTrue(np.all(vec >= 0.0) and np.all(vec <= 1.0))
+
+    def test_hurt_raises_fear_and_lowers_composure(self):
+        from domains.duel.affect import Affect
+        a = Affect()
+        composure = a.composure
+        a.hit_taken(18.0, head=True)
+        self.assertLess(a.composure, composure)
+        self.assertGreater(a.fear, 0.0)
+        self.assertGreater(a.anger, 0.0)
+        a.hit_landed(12.0)
+        self.assertGreater(a.momentum, 0.0)
+
+    def test_low_health_and_contagion_raise_fear(self):
+        from domains.duel.affect import Affect
+        a = Affect()
+        before = a.fear
+        for _ in range(30):
+            a.tick(0.10, opp_fear=0.0, opp_anger=1.0, opp_momentum=0.0)
+        self.assertGreater(a.fear, before + 0.05)
+
+    def test_guard_drains_and_breaks(self):
+        env = freeze(0.9)
+        env.p1.guard = 2.0
+        idle(env, 40, a0=KICK, a1=BLOCK)
+        self.assertGreaterEqual(env.guard_breaks, 1)
+        self.assertAlmostEqual(env.p1.guard, 35.0, delta=GUARD_REGEN * 30)
+
+    def test_guard_regenerates_when_not_blocking(self):
+        env = freeze(2.0)
+        env.p0.guard = 20.0
+        idle(env, 20)
+        self.assertGreater(env.p0.guard, 20.0 + 10.0)
+
+    def test_counter_window_is_rewarded(self):
+        env = freeze(0.9)
+        env.p0.state, env.p0.phase, env.p0.timer = S_ATTACK, "recover", 10
+        mul, stun = env.counter_bonus(env.p1, env.p0)
+        self.assertGreater(mul, 1.0)
+        self.assertGreater(stun, 0)
+        self.assertEqual(env.counters, 1)
+        env.p0.phase = "active"
+        self.assertEqual(env.counter_bonus(env.p1, env.p0), (1.0, 0))
+
+    def test_fear_weakens_guard(self):
+        # Two identical blocked hits, one calm and one frightened.
+        calm = freeze(0.9, emotion=True)
+        calm.p1.affect.composure = 1.0
+        calm.p1.guard = 50.0
+        idle(calm, 40, a0=KICK, a1=BLOCK)
+        scared = freeze(0.9, emotion=True)
+        scared.p1.affect.composure = 0.0
+        scared.p1.guard = 50.0
+        idle(scared, 40, a0=KICK, a1=BLOCK)
+        self.assertLess(scared.p1.guard, calm.p1.guard)
 
 
 if __name__ == "__main__":

@@ -44,9 +44,10 @@ HEAD_STUN = 6             # extra hit-stun on an unblocked head hit
 
 class ArticulatedDuel(Duel):
     def __init__(self, seed=None, hp=MAX_HP, max_frames=1800, start_gap=2.2,
-                 env_cfg=None, weapons=("none", "none")):
+                 env_cfg=None, weapons=("none", "none"), emotion=False):
         super().__init__(seed=seed, hp=hp, max_frames=max_frames,
-                         start_gap=start_gap, env_cfg=env_cfg, weapons=weapons)
+                         start_gap=start_gap, env_cfg=env_cfg, weapons=weapons,
+                         emotion=emotion)
 
     # ------------------------------------------------------------------ reset
     def reset(self, seed=None):
@@ -194,7 +195,9 @@ class ArticulatedDuel(Duel):
         # was landed by the fighter who took it.
         me.landed = True
         block_mul = me.block_mul() if blocked else 1.0
-        want = dmg * mul * block_mul * me.power_buff * opp.armor_buff
+        counter_mul, counter_stun = self.counter_bonus(me, opp)
+        want = (dmg * mul * block_mul * me.power_buff * opp.armor_buff
+                * counter_mul)
         hp_before = opp.hp
         opp.hp = max(0.0, opp.hp - want)
         real = hp_before - opp.hp
@@ -203,6 +206,9 @@ class ArticulatedDuel(Duel):
         self.part_hits["guard" if blocked else part] += 1
         self.events.append((self.frames, move, real, blocked,
                             me_idx, abs(opp.x - me.x), part))
+        if getattr(me, "affect", None) is not None:
+            me.affect.hit_landed(real, head=(part == "head"), blocked=blocked)
+            opp.affect.hit_taken(real, head=(part == "head"), blocked=blocked)
 
         rewards[1 - me_idx] -= real * 0.5
         rewards[me_idx] += real * 0.8
@@ -211,7 +217,8 @@ class ArticulatedDuel(Duel):
             if part == "head":
                 self.head_hits += 1
             opp.state = S_HURT
-            opp.timer = 10 + me.hurt_add() + (HEAD_STUN if part == "head" else 0)
+            opp.timer = (10 + me.hurt_add() + (HEAD_STUN if part == "head" else 0)
+                         + counter_stun)
             opp.vx = me.facing * self.knockback
             opp.phase = ""
             opp.move = None

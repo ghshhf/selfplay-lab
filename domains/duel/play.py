@@ -64,18 +64,21 @@ PART_LABEL = {"head": "头", "torso": "躯干", "leg": "腿", "guard": "格挡"}
 
 # ---------------------------------------------------------------- opponents
 class NeuralOpponent:
-    def __init__(self, ckpt: Path, seed: int = 0, deterministic: bool = True):
+    def __init__(self, ckpt: Path, seed: int = 0, deterministic: bool = True,
+                 obs_dim: int = F.OBS_DIM):
         state = json.loads((ckpt / "state.json").read_text(encoding="utf-8"))
         arrays = np.load(ckpt / "state.npz")
         meta = np.asarray(arrays["agent__meta"]).tolist()
-        obs_dim, n_actions, hidden = int(meta[0]), int(meta[1]), int(meta[2])
-        if (obs_dim, n_actions) != (F.OBS_DIM, F.N_ACTIONS):
+        obs_dim_ckpt, n_actions, hidden = int(meta[0]), int(meta[1]), int(meta[2])
+        if (obs_dim_ckpt, n_actions) != (obs_dim, F.N_ACTIONS):
             raise SystemExit(
                 "checkpoint expects %d obs / %d actions, this build is %d / %d; "
                 "retrain it with: python domains/neuro/train.py --env freeform "
-                "--out-dir %s" % (obs_dim, n_actions, F.OBS_DIM,
-                                  F.N_ACTIONS, ckpt))
-        self.agent = PPOAgent(obs_dim, n_actions, hidden=hidden,
+                "%s--out-dir %s" % (obs_dim_ckpt, n_actions, obs_dim,
+                                    F.N_ACTIONS,
+                                    "--emotion " if obs_dim > F.OBS_DIM else "",
+                                    ckpt))
+        self.agent = PPOAgent(obs_dim_ckpt, n_actions, hidden=hidden,
                               cfg=PPOConfig(), seed=seed)
         self.agent.load_state_dict({k: arrays[k] for k in arrays.files}, "agent")
         self.rng = np.random.default_rng(seed)
@@ -244,6 +247,17 @@ def render(env, last: str, agent_label: str) -> str:
         fill = int(round(max(0.0, getattr(f, "chakra", 0.0)) / 100.0 * n))
         return "◆" * fill + "◇" * (n - fill)
 
+    def guard_bar(f, n=10):
+        fill = int(round(max(0.0, getattr(f, "guard", 100.0)) / 100.0 * n))
+        return "▰" * fill + "▱" * (n - fill)
+
+    def mood(f):
+        if getattr(f, "affect", None) is None:
+            return ""
+        a = f.affect
+        return "冷静%.2f 恐惧%.2f 怒%.2f 势%.2f" % (
+            a.composure, a.fear, a.anger, a.momentum)
+
     grid = [[" "] * width for _ in range(height)]
     # ground line
     for x in range(width):
@@ -260,9 +274,14 @@ def render(env, last: str, agent_label: str) -> str:
         grid[max(0, min(height - 2, gy))][max(0, min(width - 1, gx))] = char
 
     out = []
-    out.append("  你 PLAYER  HP %5.1f [%s] 查克拉 %s" % (p0.hp, bar(p0.hp), chakra(p0)))
-    out.append("  VS %-14s HP %5.1f [%s] 查克拉 %s"
-               % (agent_label[:14], p1.hp, bar(p1.hp), chakra(p1)))
+    out.append("  你 PLAYER  HP %5.1f [%s] 查克拉 %s 防 %s"
+               % (p0.hp, bar(p0.hp), chakra(p0), guard_bar(p0)))
+    out.append("  VS %-14s HP %5.1f [%s] 查克拉 %s 防 %s"
+               % (agent_label[:14], p1.hp, bar(p1.hp), chakra(p1),
+                  guard_bar(p1)))
+    if env.emotion:
+        out.append("  心态  %s" % mood(p0))
+        out.append("  对手  %s" % mood(p1))
     out.append("  t=%5.2fs  x=%+.2f/%+.2f  y=%.2f/%.2f  %s"
                % (env.frames / 60.0, p0.x, p1.x, p0.y, p1.y, last))
     out.append("  ┌" + " " * width + "┐")
@@ -417,18 +436,23 @@ def main(argv=None):
     ap.add_argument("--style", choices=("balanced", "pressure", "counter"),
                     default="balanced")
     ap.add_argument("--max-frames", type=int, default=1800)
+    ap.add_argument("--emotion", action="store_true",
+                    help="enable the affect layer (checkpoint must be trained "
+                         "with --emotion)")
     ap.add_argument("--json", type=str, default="")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
-    arena = F.FreeformDuel(max_frames=args.max_frames)
+    arena = F.FreeformDuel(max_frames=args.max_frames, emotion=args.emotion)
     if args.opponent == "neural":
         ckpt = args.ckpt if args.ckpt.exists() else None
         if ckpt is None:
             raise SystemExit("no checkpoint at %s; train one with "
                              "domains/neuro/train.py --env freeform "
                              "--out-dir %s" % (args.ckpt, args.ckpt))
-        opp = NeuralOpponent(ckpt, seed=args.seed, deterministic=True)
+        opp = NeuralOpponent(ckpt, seed=args.seed, deterministic=True,
+                             obs_dim=F.OBS_DIM + (
+                                 F.EMOTION_EXTRA if args.emotion else 0))
     elif args.opponent == "scripted":
         opp = ScriptedOpponent({"aggr": 0.6, "guard": 0.3, "kick": 0.5,
                                 "dist": 1.15, "duck": 0.12, "jump": 0.08},
