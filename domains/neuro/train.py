@@ -48,6 +48,45 @@ from selfplay.nn.world_model import WorldModel  # noqa: E402
 
 AFFECT_KEYS = ("composure", "fear", "anger", "momentum")
 
+# Three opponent-style regions, scored only on the final iteration.  A single
+# fixed scripted gene is a timing cliff, not a style: react 5 can lose every
+# game while react 6 wins ~90% against the same policy (FINDINGS 24).  So each
+# style is a fixed 5-gene panel sampled once from its bounds; the diagnostic is
+# the mean win rate over that panel.  Bounds isolate style (aggression, guard,
+# kick bias, preferred distance) and leave the rest of the gene constant.
+_ARCHETYPE_BOUNDS = {
+    "rush":    {"aggr": (0.70, 0.95), "guard": (0.15, 0.35),
+                "kick": (0.10, 0.30), "dist": (0.70, 0.95),
+                "react": (5, 8)},
+    "counter": {"aggr": (0.30, 0.50), "guard": (0.45, 0.70),
+                "kick": (0.10, 0.25), "dist": (0.95, 1.10),
+                "react": (5, 8)},
+    "zoner":   {"aggr": (0.20, 0.40), "guard": (0.30, 0.55),
+                "kick": (0.55, 0.85), "dist": (1.10, 1.25),
+                "react": (5, 8)},
+}
+ARCHETYPE_PANEL = 5
+
+
+def _make_archetypes():
+    panels = {}
+    for i, (name, bounds) in enumerate(_ARCHETYPE_BOUNDS.items()):
+        rng = np.random.default_rng(1000 + i)
+        genes = []
+        for _ in range(ARCHETYPE_PANEL):
+            gene = {"weapon": "none", "idle": 0.10, "loot": 0.2, "avoid": 0.2}
+            for key, (lo, hi) in bounds.items():
+                if key == "react":
+                    gene[key] = int(rng.integers(int(lo), int(hi) + 1))
+                else:
+                    gene[key] = round(float(rng.uniform(lo, hi)), 3)
+            genes.append(gene)
+        panels[name] = genes
+    return panels
+
+
+ARCHETYPES = _make_archetypes()
+
 try:
     from .env import (ACTION_NAMES, ARTICULATED_OBS_DIM, ArticulatedArena,
                       FREEFORM_ACTION_NAMES, FREEFORM_ACTION_NAMES_3D,
@@ -831,8 +870,9 @@ class NeuroTrainer:
             "act_hist": hist,
         }
 
-    def _evaluate(self, n: int, kind: str, agent=None):
+    def _evaluate(self, n: int, kind: str, agent=None, gene=None):
         agent = agent if agent is not None else self.agent
+        gene = gene if gene is not None else self._holdout_gene()
         # A fixed seed suite, independent of the training RNG, so the same
         # checkpoint is always scored on the same matches.
         outcomes = []
@@ -854,7 +894,7 @@ class NeuroTrainer:
                 if kind == "random":
                     opp = RandomOpponent(n_actions=self.n_actions)
                 else:
-                    opp = ScriptedOpponent(self._holdout_gene(),
+                    opp = ScriptedOpponent(gene,
                                           reach_scale=self.reach_scale)
                 opp.reset(seed * 2 + side)
                 arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
@@ -1138,6 +1178,18 @@ class NeuroTrainer:
                      if self.ema_agent is not None else None),
                 )
             holdout, random_eval, ema_eval = self._last_eval
+            # One holdout gene is a single sample of opponent space.  On the
+            # last iteration also score three style panels, purely as a
+            # diagnostic: a mechanism that only wins one style is not robust.
+            arch = None
+            if iteration == self.args.iterations - 1 and self.args.env == "freeform":
+                arch = {
+                    name: float(np.mean([
+                        self._evaluate(self.args.eval_episodes, "holdout",
+                                       gene=g)["win"]
+                        for g in panel]))
+                    for name, panel in ARCHETYPES.items()
+                }
         entropy = self._entropy(real_episodes)
 
         self.history.append(float(stats["win"]))
@@ -1234,6 +1286,10 @@ class NeuroTrainer:
             "eval_evades": round(float(holdout.get("evades", 0.0)), 2),
             "eval_act_hist0": holdout.get("act_hist0"),
             "eval_act_hist1": holdout.get("act_hist1"),
+            "arch_wins": (None if arch is None else {
+                k: round(float(v), 3) for k, v in arch.items()}),
+            "arch_min_win": (None if arch is None
+                             else round(float(min(arch.values())), 3)),
             "affect": (None if stats.get("affect") is None else {
                 name: round(float(value), 3) for name, value
                 in zip(AFFECT_KEYS, stats["affect"])}),
