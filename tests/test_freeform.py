@@ -89,6 +89,22 @@ class TestMassObservation(unittest.TestCase):
         self.assertAlmostEqual(float(o1[-1]), 50.0 / 140.0, places=5)
 
 
+class TestRandomMass(unittest.TestCase):
+    def test_weights_are_resampled_within_range(self):
+        env = FreeformDuel(seed=0, max_frames=300, physics=True,
+                           env_cfg={"rand_mass": (60.0, 120.0),
+                                    "mass_obs": True})
+        masses = []
+        for s in range(6):
+            o0, _o1 = env.reset(s)
+            self.assertEqual(len(o0), OBS_DIM + 2)
+            masses.append((env.p0.mass, env.p1.mass))
+        for m0, m1 in masses:
+            self.assertTrue(60.0 <= m0 <= 120.0)
+            self.assertTrue(60.0 <= m1 <= 120.0)
+        self.assertGreater(len({round(m0, 2) for m0, _m1 in masses}), 1)
+
+
 class TestVerticalPhysics(unittest.TestCase):
     def test_jump_arc_and_landing(self):
         env = freeze(0.9)

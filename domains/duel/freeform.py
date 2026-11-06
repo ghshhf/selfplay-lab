@@ -165,6 +165,9 @@ class FreeformDuel(ArticulatedDuel):
         # whether it is driving the 50 kg or the 100 kg fighter unless mass
         # is in the observation.  Off by default to keep old obs shapes.
         self.mass_obs = bool(ec.get("mass_obs", False))
+        # Weight-class curriculum: when set to (lo, hi), both bodies are
+        # resampled every episode so the policy sees a continuum of builds.
+        self.rand_mass = ec.get("rand_mass") or None
         super().__init__(*args, **kwargs)
 
     def reset(self, seed=None):
@@ -186,6 +189,11 @@ class FreeformDuel(ArticulatedDuel):
         self._slam_rewards = [0.0, 0.0]
         self._evade_rewards = [0.0, 0.0]
         obs = super().reset(seed)
+        if self.rand_mass:
+            lo, hi = float(self.rand_mass[0]), float(self.rand_mass[1])
+            rng = np.random.default_rng(0 if seed is None else int(seed) + 7919)
+            m0, m1 = rng.uniform(lo, hi, size=2)
+            self.p0.mass, self.p1.mass = float(m0), float(m1)
         for f in (self.p0, self.p1):
             f.chakra = CHAKRA_MAX
             f.sub_cd = 0

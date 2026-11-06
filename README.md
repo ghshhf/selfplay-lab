@@ -178,6 +178,7 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 | Hitstop | 按伤害/爆头给 1–6 帧全体冻结（计时器与情绪都不走） | 打击感来自"停"，不是数字跳 |
 | 身位分离 | 按逆质量加权推开并消解接近速度 | 撞进更重的人，被推开的是你 |
 | 体重观测 | `--mass-obs`：观测尾部追加 `[自己体重, 对手体重]/140`（+2 维，默认关） | 50 kg vs 100 kg 对局中，轻量席位从 .250 提到 .528（23.3） |
+| 随机体重（实验性） | `--rand-mass 60 120`：训练每局重采样双方体重（隐含 `--mass-obs`），评估仍固定 `--mass0/--mass1` | 端点 50 kg 从 .528 掉到 .444（负结果，23.6） |
 
 质量/摩擦/反弹/冲量都是纯函数，单测不依赖环境；`--physics` 默认关闭，
 旧的 2D 代码路径逐字不变。实测见 FINDINGS 第二十、二十一节。
@@ -465,6 +466,11 @@ python domains/neuro/train.py --env freeform --physics \
     --mass0 50 --mass1 100 --mass-obs --iterations 40 --episodes 4 \
     --eval-episodes 12 --out-dir runs/neuro_mass
 
+# 体重课程：训练每局在 60–120 kg 采样，评估仍固定 50 vs 100（负结果，23.6）
+python domains/neuro/train.py --env freeform --physics \
+    --mass0 50 --mass1 100 --rand-mass 60 120 --iterations 40 --episodes 4 \
+    --eval-episodes 12 --out-dir runs/neuro_rand_mass
+
 # 让策略直接吃学到的 8 维隐向量（而不是 35 维手工特征）
 python domains/neuro/train.py --env freeform --latent-policy --latent-dim 8 \
     --iterations 15 --episodes 5 --out-dir runs/neuro_latent_policy
@@ -504,7 +510,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 195 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级/体重观测、3D 几何/纵深侧移/错线挥空/侧跳横扫/evade 兑现、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
+python -m unittest discover -s tests -v   # 196 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级/体重观测/随机体重、3D 几何/纵深侧移/错线挥空/侧跳横扫/evade 兑现、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
 ```
 
 ---

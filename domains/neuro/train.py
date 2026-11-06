@@ -143,7 +143,8 @@ class NeuroTrainer:
             self.obs_dim = ((FREEFORM_OBS_DIM_3D if args.arena3d
                              else FREEFORM_OBS_DIM)
                             + (FREEFORM_EMOTION_EXTRA if args.emotion else 0)
-                            + (FREEFORM_MASS_EXTRA if args.mass_obs else 0))
+                            + (FREEFORM_MASS_EXTRA
+                               if (args.mass_obs or args.rand_mass) else 0))
             self.n_actions = (FREEFORM_N_ACTIONS_3D if args.arena3d
                               else FREEFORM_N_ACTIONS)
             self.reach_scale = 0.86
@@ -158,6 +159,7 @@ class NeuroTrainer:
         # effect with --physics, so it is ignored otherwise.  The sidestep
         # evade payoff is opt-in because it measured worse than no shaping.
         self.env_cfg = None
+        self.eval_env_cfg = None
         if args.env == "freeform":
             cfg = {}
             if args.physics:
@@ -168,6 +170,20 @@ class NeuroTrainer:
                 cfg["evade_reward"] = float(args.evade_reward)
             if args.mass_obs:
                 cfg["mass_obs"] = True
+            if args.rand_mass:
+                # Training resamples both bodies; evaluation stays on the
+                # fixed match-up given by --mass0/--mass1.
+                lo, hi = float(args.rand_mass[0]), float(args.rand_mass[1])
+                cfg.pop("mass0", None)
+                cfg.pop("mass1", None)
+                cfg["rand_mass"] = [lo, hi]
+                cfg["mass_obs"] = True
+                ev = dict(cfg)
+                ev.pop("rand_mass")
+                if args.physics and (args.mass0 != 70.0
+                                     or args.mass1 != 70.0):
+                    ev["mass0"], ev["mass1"] = float(args.mass0), float(args.mass1)
+                self.eval_env_cfg = ev or None
             if cfg:
                 self.env_cfg = cfg
 
@@ -846,7 +862,7 @@ class NeuroTrainer:
                                     emotion=self.args.emotion,
                                     physics=self.args.physics,
                                     arena3d=self.args.arena3d,
-                                    env_cfg=self.env_cfg)
+                                    env_cfg=self.eval_env_cfg)
                 o0, o1 = arena.reset(seed)
                 info = {"winner": -1}
                 while True:
@@ -1378,6 +1394,11 @@ def build_argparser():
     ap.add_argument("--mass-obs", action="store_true",
                     help="freeform: append [self mass, opponent mass] to the "
                          "observation (needed when --mass0 != --mass1)")
+    ap.add_argument("--rand-mass", nargs=2, type=float,
+                    metavar=("LO", "HI"),
+                    help="freeform + --physics: resample both weight classes "
+                         "uniformly in [LO,HI] every episode (implies "
+                         "--mass-obs); evaluation stays at --mass0/--mass1")
     ap.add_argument("--fitness", choices=("win", "margin"), default="win",
                     help="selection signal for PBT: binary win rate, or the "
                          "continuous health margin (hp difference / 100)")
