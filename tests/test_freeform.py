@@ -447,6 +447,40 @@ class TestRigidBodyPhysics(unittest.TestCase):
         self.assertGreaterEqual(env.knockback_peak, 0.5)
         self.assertGreater(env.p1.x - 0.6, 0.1)
 
+    def test_wall_slam_hurts_and_pays_the_attacker(self):
+        env = freeze(0.9, physics=True)
+        env.p1.x, env.p1.vx = env.half - 0.01, 2.5
+        env.p1.state, env.p1.timer = S_HURT, 20
+        hp0 = env.p1.hp
+        _o0, _o1, r0, r1, _done, info = env.step(IDLE, IDLE)
+        self.assertGreaterEqual(env.wall_slams, 1)
+        self.assertLess(env.p1.hp, hp0)
+        self.assertGreater(r0, 0.0)
+        self.assertLess(r1, 0.0)
+        self.assertGreaterEqual(info["wall_slams"], 1)
+        self.assertEqual(env.events[-1][1], "wall")
+
+    def test_walking_into_wall_does_not_slam(self):
+        env = freeze(0.9, physics=True)
+        env.p0.x, env.p0.vx = env.half - 0.01, 2.5
+        env.p0.state, env.p0.timer = S_IDLE, 1
+        idle(env, 3, a0=FWD)
+        self.assertEqual(env.wall_slams, 0)
+
+    def test_heavier_walks_slower(self):
+        def walk(mass):
+            env = FreeformDuel(seed=0, max_frames=900, start_gap=6.0,
+                               physics=True, env_cfg={"mass0": mass})
+            env.reset(0)
+            env.p0.x, env.p1.x = -3.0, 3.0
+            env.p0.facing, env.p1.facing = 1, -1
+            env.p0.state = env.p1.state = S_IDLE
+            start = env.p0.x
+            idle(env, 20, a0=FWD)
+            return env.p0.x - start
+
+        self.assertGreater(walk(45.0), walk(110.0) * 1.2)
+
     def test_heavier_fighter_is_pushed_less(self):
         def hit_with_mass(m):
             env = FreeformDuel(seed=0, max_frames=900, start_gap=1.2,

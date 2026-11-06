@@ -50,6 +50,18 @@ def mass_of(body) -> float:
     return float(getattr(body, "mass", DEFAULT_MASS))
 
 
+def mass_speed_factor(mass: float, reference: float = DEFAULT_MASS) -> float:
+    """Walking-speed multiplier for a weight class.
+
+    Without a downside, extra mass would be a free upgrade: it already makes
+    you harder to push, harder to launch into a wall and harder to separate.
+    The cost is mobility -- speed scales with ``sqrt(reference / mass)``.
+    At the default 70 kg this is exactly 1.0, so equal-weight matches are
+    unchanged; 100 kg walks at 0.84x and 50 kg at 1.18x.
+    """
+    return math.sqrt(reference / max(1.0, float(mass)))
+
+
 def velocity(body) -> float:
     return float(getattr(body, "vx", 0.0))
 

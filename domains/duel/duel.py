@@ -101,6 +101,7 @@ class Fighter:
         self.x = float(x)
         self.vx = 0.0
         self.mass = 70.0              # kg; only used when physics=True
+        self.mass_speed = 1.0         # weight-class mobility cost (1.0 = neutral)
         self.facing = facing          # +1 / -1
         self.hp = float(hp)
         self.weapon = weapon
@@ -450,7 +451,7 @@ class Duel:
         if me.state in (S_ATTACK, S_HURT):
             return                      # 出招中/硬直中，动作无效
 
-        spd = WALK_SPEED * me.speed_mul() * me.speed_buff
+        spd = WALK_SPEED * me.speed_mul() * me.speed_buff * me.mass_speed
         if me.slow_timer > 0:
             spd *= 0.5
 

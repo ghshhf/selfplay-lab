@@ -169,16 +169,17 @@ holdout 0.75–0.92，random 0.67–0.92，每局平均 **16 次头击**；L0 �
 
 | 规则 | 实现 | 可观测效果 |
 |---|---|---|
-| 质量 | `Fighter.mass`（kg），env_cfg 可给双方不同 `mass0/mass1` | 同一拳打 50 kg 与 120 kg 的位移差约 2.4 倍 |
+| 质量 | `Fighter.mass`（kg），`--mass0/--mass1`；走路速度乘以 `sqrt(70/m)` | 同一拳打 50 kg 与 120 kg 的位移差约 2.4 倍；100 kg 走路慢 16% |
 | 库仑摩擦 | 地面减速度 `μ·g`（μ=0.30 → 2.94 m/s²），低速直接停 | 一次前踢滑行约 0.29 m（旧模型 0.22 m） |
 | 重力 | 9.8 m/s²，与跳跃共用；落地非弹性 | 跳跃最高点与滞空帧数不变 |
-| 墙面反弹 | 只有硬直中的击退会弹（恢复系数 0.35）；走着撞墙则停 | 训练后每局 0–0.75 次墙撞，随机策略 2–5 次 |
+| 墙面反弹 | 只有硬直中的击退会弹（恢复系数 0.35）；走着撞墙则停 | 20 轮后每局 1.17 次墙撞 |
+| 墙角重击 | 击退撞墙按入射速度结算 1.5–7 点伤害，额外 8 帧硬直，攻方 +1.0 形状奖励 | corner slam 每局 1.08 次（第二十一节） |
 | 冲量交换 | 命中按伤害给防守方冲量，进攻方吃 22% 反冲 | 重击会把两个人同时推开 |
 | Hitstop | 按伤害/爆头给 1–6 帧全体冻结（计时器与情绪都不走） | 打击感来自"停"，不是数字跳 |
 | 身位分离 | 按逆质量加权推开并消解接近速度 | 撞进更重的人，被推开的是你 |
 
 质量/摩擦/反弹/冲量都是纯函数，单测不依赖环境；`--physics` 默认关闭，
-旧的 2D 代码路径逐字不变。实测见 FINDINGS 第二十节。
+旧的 2D 代码路径逐字不变。实测见 FINDINGS 第二十、二十一节。
 
 **情绪层（`domains/duel/affect.py`，`--emotion`）**：每个角色有 4 个 [0,1] 的漏积分量——
 冷静 (`composure`)、恐惧 (`fear`)、愤怒 (`anger`)、气势 (`momentum`)。它们不是奖励，
@@ -412,6 +413,10 @@ python domains/neuro/train.py --env articulated --bc-episodes 12 --bc-epochs 120
 python domains/neuro/train.py --env freeform --entropy-coef 0.05 \
     --iterations 8 --episodes 6 --out-dir runs/neuro_free
 
+# 打开刚体物理（质量可给双方不同：重的人难推动但走得慢）
+python domains/neuro/train.py --env freeform --physics --mass0 50 --mass1 100 \
+    --iterations 20 --episodes 4 --out-dir runs/neuro_weight
+
 # 再打开情绪层（冷静/恐惧/愤怒/气势，43 维观测）
 python domains/neuro/train.py --env freeform --emotion --entropy-coef 0.05 \
     --iterations 15 --episodes 5 --out-dir runs/neuro_emo
@@ -459,7 +464,7 @@ python domains/neuro/train.py --curriculum-patience 3 --wm-level-threshold 0.015
 产物：`manifest.json`（run 元信息）、`metrics.jsonl`（逐 iteration 指标，可复现）、`compute.jsonl`（分段耗时与 Elo/CPU 秒，与机器相关所以单独存）、`progress.tsv`（表格版）、`state.json` + `state.npz`（可 resume）。
 
 ```bash
-python -m unittest discover -s tests -v   # 153 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、3D 几何、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
+python -m unittest discover -s tests -v   # 181 个测试：反向传播、PPO、BC、课程、resume 等价、health、肢体几何/接触、自由二维/替身术/防御槽/counter、情绪层、刚体物理/墙撞/重量级、3D 几何、玩家模式、隐空间世界模型、LLM 训练栈、零数据自进化、算力账本、统计区间、PBT、想象训练、RND 好奇心、连续适应度
 ```
 
 ---

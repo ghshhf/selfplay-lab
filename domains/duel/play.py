@@ -441,12 +441,19 @@ def main(argv=None):
                          "with --emotion)")
     ap.add_argument("--physics", action="store_true",
                     help="enable mass/friction/wall-bounce/hitstop physics")
+    ap.add_argument("--mass0", type=float, default=70.0,
+                    help="seat 0 weight class in kg (physics only)")
+    ap.add_argument("--mass1", type=float, default=70.0,
+                    help="seat 1 weight class in kg (physics only)")
     ap.add_argument("--json", type=str, default="")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
+    env_cfg = ({"mass0": args.mass0, "mass1": args.mass1}
+               if args.physics and (args.mass0 != 70.0 or args.mass1 != 70.0)
+               else None)
     arena = F.FreeformDuel(max_frames=args.max_frames, emotion=args.emotion,
-                           physics=args.physics)
+                           physics=args.physics, env_cfg=env_cfg)
     if args.opponent == "neural":
         ckpt = args.ckpt if args.ckpt.exists() else None
         if ckpt is None:

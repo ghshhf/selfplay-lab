@@ -135,6 +135,22 @@ class TestImpulse(unittest.TestCase):
         self.assertAlmostEqual(abs(light.vx) / abs(heavy.vx), 2.0, places=6)
 
 
+class TestWeightClass(unittest.TestCase):
+    def test_default_mass_is_neutral(self):
+        self.assertEqual(physics.mass_speed_factor(70.0), 1.0)
+
+    def test_heavy_is_slower_and_light_is_faster(self):
+        self.assertLess(physics.mass_speed_factor(100.0), 1.0)
+        self.assertGreater(physics.mass_speed_factor(50.0), 1.0)
+        self.assertAlmostEqual(physics.mass_speed_factor(280.0), 0.5, places=9)
+
+    def test_monotone_in_mass(self):
+        # Same rule for both seats; only the kg value differs.
+        speeds = [physics.mass_speed_factor(m)
+                  for m in (40.0, 55.0, 70.0, 90.0, 120.0)]
+        self.assertEqual(speeds, sorted(speeds, reverse=True))
+
+
 class TestHitstop(unittest.TestCase):
     def test_scales_with_damage_and_blocks(self):
         self.assertEqual(physics.hitstop_frames(3.0), 2)

@@ -99,6 +99,16 @@ AIR_CONTROL = 0.55     # horizontal speed multiplier while airborne
 AIR_DRAG = 0.82        # per-frame vx decay while airborne
 AIR_HEIGHT = 0.08      # above this a KICK is a flying kick
 
+# Wall slam: being knocked into the arena wall is a second, smaller hit.
+# Without it the wall is only a boundary; with it, cornering the opponent
+# becomes a strategic goal instead of an accident.  Damage scales with the
+# impact speed, so a clean heavy kick near the wall hurts more than a jab.
+WALL_SLAM_PER_SPEED = 1.2   # damage per m/s of incoming knockback
+WALL_SLAM_MIN = 1.5
+WALL_SLAM_MAX = 7.0
+WALL_SLAM_STUN = 8          # extra hurt frames after the bounce
+WALL_SLAM_BONUS = 1.0       # attacker shaping on top of the damage reward
+
 TECH = {
     PUNCH: limbs.ART_MOVES[PUNCH],
     KICK: limbs.ART_MOVES[KICK],
@@ -123,14 +133,18 @@ class FreeformDuel(ArticulatedDuel):
         self.guard_breaks = 0
         self.counters = 0
         self.wall_bounces = 0
+        self.wall_slams = 0
         self.hitstop = 0
         self.knockback_peak = 0.0
+        self._slam_rewards = [0.0, 0.0]
         obs = super().reset(seed)
         for f in (self.p0, self.p1):
             f.chakra = CHAKRA_MAX
             f.sub_cd = 0
             f.invuln = 0
             f.guard = GUARD_MAX
+            if self.physics:
+                f.mass_speed = physics.mass_speed_factor(f.mass)
         return self._obs()
 
     # ------------------------------------------------------------------- pose
@@ -171,7 +185,8 @@ class FreeformDuel(ArticulatedDuel):
         if act in (FWD, BACK) and me.y > 0.0:
             # Air control is deliberately weaker than walking, otherwise a
             # jump is just a faster dash with no risk.
-            spd = WALK_SPEED * me.speed_mul() * me.speed_buff * AIR_CONTROL
+            spd = (WALK_SPEED * me.speed_mul() * me.speed_buff
+                   * me.mass_speed * AIR_CONTROL)
             me.vx = (spd if act == FWD else -spd * 0.85) * me.facing
             me.state = S_JUMP
             return
@@ -263,13 +278,15 @@ class FreeformDuel(ArticulatedDuel):
         if self.physics:
             # Mass/friction/wall model.  Body separation is weighted by inverse
             # mass, so walking into the heavier fighter moves you, not them.
-            for f in (self.p0, self.p1):
+            for i, f in enumerate((self.p0, self.p1)):
                 if f.y > 0.0 or f.vy > 0.0:
                     self.air_frames += 1
                 physics.step(f, 1.0 / FPS)
+                impact = abs(f.vx)
                 if physics.collide_walls(f, self.half, self.walls,
                                          bounce=(f.state == S_HURT)):
                     self.wall_bounces += 1
+                    self._wall_slam(i, f, 1 - i, impact)
             if not self._wall_blocks(self.p0.x, self.p1.x):
                 physics.separate_pair(self.p0, self.p1, BODY_GAP)
             return
@@ -284,6 +301,30 @@ class FreeformDuel(ArticulatedDuel):
                     f.y, f.vy = 0.0, 0.0
                     if f.state == S_JUMP:
                         f.state, f.timer = S_IDLE, 1
+
+    def _wall_slam(self, victim_idx, victim, attacker_idx, impact):
+        """A knockback that reaches the arena wall is a second hit.
+
+        The bounce itself only happens for hurt bodies (see physics.collide_
+        walls), so simply reversing the velocity is not enough: without
+        consequences the wall is scenery.  Damage is proportional to the
+        incoming speed, and the attacker gets both the damage credit and a
+        small shaping bonus, which is what makes cornering worth pursuing.
+        """
+        dmg = min(WALL_SLAM_MAX, max(WALL_SLAM_MIN,
+                                    WALL_SLAM_PER_SPEED * float(impact)))
+        hp_before = victim.hp
+        victim.hp = max(0.0, victim.hp - dmg)
+        real = hp_before - victim.hp
+        if real <= 0.0:
+            return
+        self.damage_dealt[attacker_idx] += real
+        victim.timer = max(victim.timer, WALL_SLAM_STUN)
+        self.wall_slams += 1
+        self._slam_rewards[attacker_idx] += real * 0.8 + WALL_SLAM_BONUS
+        self._slam_rewards[victim_idx] -= real * 0.5
+        self.events.append((self.frames, "wall", real, False, attacker_idx,
+                            abs(victim.x), "wall"))
 
     def _tick(self, f):
         if f.state == S_SUB:
@@ -381,7 +422,7 @@ class FreeformDuel(ArticulatedDuel):
             "flying_hits": self.flying_hits, "air_frames": self.air_frames,
             "subs": self.subs, "sub_avoided": self.sub_avoided,
             "guard_breaks": self.guard_breaks, "counters": self.counters,
-            "wall_bounces": self.wall_bounces,
+            "wall_bounces": self.wall_bounces, "wall_slams": self.wall_slams,
             "knockback_peak": round(self.knockback_peak, 3),
             "guard": (self.p0.guard, self.p1.guard),
             "hp": (self.p0.hp, self.p1.hp),
@@ -394,6 +435,7 @@ class FreeformDuel(ArticulatedDuel):
             self.hitstop -= 1
             self.frames += 1
             return [0.0, 0.0], False, self._match_info()
+        self._slam_rewards = [0.0, 0.0]
         for f in (self.p0, self.p1):
             if f.alive:
                 f.chakra = min(CHAKRA_MAX, f.chakra + CHAKRA_REGEN)
@@ -405,5 +447,9 @@ class FreeformDuel(ArticulatedDuel):
                 if f.invuln > 0:
                     f.invuln -= 1
         rewards, done, info = super()._advance(a0, a1)
+        # Wall-slam damage happens inside _integrate, after _combat has already
+        # distributed this frame's hit rewards; fold it in afterwards.
+        rewards[0] += self._slam_rewards[0]
+        rewards[1] += self._slam_rewards[1]
         info.update(self._match_info())
         return rewards, done, info

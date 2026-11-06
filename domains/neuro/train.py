@@ -144,6 +144,15 @@ class NeuroTrainer:
             self.n_actions = N_ACTIONS
             self.reach_scale = 1.0
 
+        # Weight classes are part of the match-up, not the policy: both seats
+        # still share one network, but one body is heavier.  Mass only has an
+        # effect with --physics, so it is ignored otherwise.
+        self.env_cfg = None
+        if args.env == "freeform" and args.physics:
+            m0, m1 = float(args.mass0), float(args.mass1)
+            if m0 != 70.0 or m1 != 70.0:
+                self.env_cfg = {"mass0": m0, "mass1": m1}
+
         self.policy_dim = (args.latent_dim if args.latent_policy
                            else self.obs_dim)
         self.encoder = None          # set when --latent-policy is active
@@ -425,7 +434,8 @@ class NeuroTrainer:
             arena = self.arena_cls(seed=seed, max_frames=max(200, self.args.max_frames // 2),
                                    start_gap=self.args.train_gap,
                                    emotion=self.args.emotion,
-                                   physics=self.args.physics)
+                                   physics=self.args.physics,
+                                   env_cfg=self.env_cfg)
             o0, o1 = arena.reset(seed)
             while True:
                 a0 = int(self.rng.integers(self.n_actions))
@@ -460,7 +470,8 @@ class NeuroTrainer:
             for side in (0, 1):
                 arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                                        start_gap=gap, emotion=self.args.emotion,
-                                       physics=self.args.physics)
+                                       physics=self.args.physics,
+                                       env_cfg=self.env_cfg)
                 o0, o1 = arena.reset(seed)
                 opp = None
                 if kind < len(pool):
@@ -612,7 +623,8 @@ class NeuroTrainer:
         arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                             start_gap=self.args.train_gap,
                             emotion=self.args.emotion,
-                            physics=self.args.physics)
+                            physics=self.args.physics,
+                            env_cfg=self.env_cfg)
         o0, o1 = arena.reset(seed)
         side = int(self.rng.integers(2))
         ep = Episode()
@@ -679,6 +691,7 @@ class NeuroTrainer:
             "guard_breaks": int(info.get("guard_breaks", 0)),
             "counters": int(info.get("counters", 0)),
             "wall_bounces": int(info.get("wall_bounces", 0)),
+            "wall_slams": int(info.get("wall_slams", 0)),
             "clashes": int(info.get("clashes", 0)),
             "head_hits": int(info.get("head_hits", 0)),
             "jumps": int(info.get("jumps", 0)),
@@ -705,6 +718,7 @@ class NeuroTrainer:
         breaks = []
         counters = []
         walls = []
+        slams = []
         for k in range(n):
             name, opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
@@ -727,6 +741,7 @@ class NeuroTrainer:
             breaks.append(stat["guard_breaks"])
             counters.append(stat["counters"])
             walls.append(stat["wall_bounces"])
+            slams.append(stat["wall_slams"])
             if stat["affect"] is not None:
                 affects.append(stat["affect"])
 
@@ -757,6 +772,7 @@ class NeuroTrainer:
             "guard_breaks": float(np.mean(breaks)) if breaks else 0.0,
             "counters": float(np.mean(counters)) if counters else 0.0,
             "wall_bounces": float(np.mean(walls)) if walls else 0.0,
+            "wall_slams": float(np.mean(slams)) if slams else 0.0,
             "affect": (np.mean(affects, axis=0) if affects else None),
             "steps": int(sum(len(ep.steps) for ep in episodes)),
             "returns": returns,
@@ -774,6 +790,7 @@ class NeuroTrainer:
         heads = []
         subs = []
         walls = []
+        slams = []
         eval_rng = np.random.default_rng(0)
         for seed in range(2000, 2000 + n):
             for side in (0, 1):
@@ -786,7 +803,8 @@ class NeuroTrainer:
                 arena = self.arena_cls(seed=seed, max_frames=self.args.max_frames,
                                     start_gap=self.args.eval_gap,
                                     emotion=self.args.emotion,
-                                    physics=self.args.physics)
+                                    physics=self.args.physics,
+                                    env_cfg=self.env_cfg)
                 o0, o1 = arena.reset(seed)
                 info = {"winner": -1}
                 while True:
@@ -817,6 +835,7 @@ class NeuroTrainer:
                 heads.append(int(info.get("head_hits", 0)))
                 subs.append(int(info.get("subs", 0)))
                 walls.append(int(info.get("wall_bounces", 0)))
+                slams.append(int(info.get("wall_slams", 0)))
         summary = summarise(outcomes, seed=0)
         margin_summary = summarise(margins, seed=0)
         return {
@@ -831,6 +850,7 @@ class NeuroTrainer:
             "head_hits": float(np.mean(heads)) if heads else 0.0,
             "subs": float(np.mean(subs)) if subs else 0.0,
             "wall_bounces": float(np.mean(walls)) if walls else 0.0,
+            "wall_slams": float(np.mean(slams)) if slams else 0.0,
             "games": len(outcomes),
             "outcomes": outcomes,
         }
@@ -1128,6 +1148,8 @@ class NeuroTrainer:
             "guard_breaks": round(float(stats.get("guard_breaks", 0.0)), 2),
             "counters": round(float(stats.get("counters", 0.0)), 2),
             "wall_bounces": round(float(stats.get("wall_bounces", 0.0)), 2),
+            "wall_slams": round(float(stats.get("wall_slams", 0.0)), 2),
+            "eval_wall_slams": round(float(holdout.get("wall_slams", 0.0)), 2),
             "affect": (None if stats.get("affect") is None else {
                 name: round(float(value), 3) for name, value
                 in zip(AFFECT_KEYS, stats["affect"])}),
@@ -1273,6 +1295,10 @@ def build_argparser():
     ap.add_argument("--physics", action="store_true",
                     help="freeform only: mass, Coulomb friction, wall "
                          "restitution, impulse knockback and hitstop")
+    ap.add_argument("--mass0", type=float, default=70.0,
+                    help="freeform + --physics: weight class of seat 0 in kg")
+    ap.add_argument("--mass1", type=float, default=70.0,
+                    help="freeform + --physics: weight class of seat 1 in kg")
     ap.add_argument("--fitness", choices=("win", "margin"), default="win",
                     help="selection signal for PBT: binary win rate, or the "
                          "continuous health margin (hp difference / 100)")
