@@ -21,8 +21,8 @@ from domains.duel import limbs
 from domains.duel.duel import (S_IDLE, S_ATTACK, S_BLOCK, S_DUCK, S_JUMP,
                               S_HURT, FWD, BACK, PUNCH, KICK, BLOCK, IDLE)
 from domains.duel.freeform import (FreeformDuel, JUMP, DUCK, SUB, S_SUB,
-                                   SIDESTEP, N_ACTIONS, OBS_DIM, OBS_DIM_3D,
-                                   N_ACTIONS_3D, ACTION_NAMES_3D, TECH,
+                                   SIDESTEP, S_SIDESTEP, N_ACTIONS, OBS_DIM,
+                                   OBS_DIM_3D, N_ACTIONS_3D, ACTION_NAMES_3D, TECH,
                                    AIR_HEIGHT, Z_HIT_WIDTH, SIDESTEP_V,
                                    JUMP_V, GRAVITY, CHAKRA_MAX, CHAKRA_REGEN,
                                    SUB_COST, SUB_DIST, SUB_COOLDOWN,
@@ -323,8 +323,9 @@ class TestSubstitution(unittest.TestCase):
 
 
 class TestArena3D(unittest.TestCase):
-    def _env(self, dist=0.9):
-        env = FreeformDuel(seed=0, max_frames=900, start_gap=dist, arena3d=True)
+    def _env(self, dist=0.9, evade_reward=0.0):
+        env = FreeformDuel(seed=0, max_frames=900, start_gap=dist, arena3d=True,
+                           env_cfg={"evade_reward": evade_reward})
         env.reset(0)
         env.p0.x, env.p1.x = -dist * 0.5, dist * 0.5
         env.p0.vx = env.p1.vx = 0.0
@@ -378,6 +379,29 @@ class TestArena3D(unittest.TestCase):
         idle(env, 30)
         self.assertEqual(env.p0.z, env.depth_half)
         self.assertEqual(env.p0.vz, 0.0)
+
+    def test_active_whiff_across_depth_pays_the_dodger(self):
+        env = self._env(evade_reward=0.8)
+        env.p0.state, env.p0.phase, env.p0.move = S_ATTACK, "active", PUNCH
+        env.p0.timer, env.p0.landed, env.p0.evade_paid = 3, False, False
+        env.p1.state, env.p1.phase, env.p1.timer = S_SIDESTEP, "out", 5
+        env.p1.z, env.p1.vz = 0.4, 0.0
+        hp = env.p1.hp
+        _o0, _o1, r0, r1, _done, info = env.step(IDLE, IDLE)
+        self.assertEqual(env.p1.hp, hp)
+        self.assertEqual(env.evades, 1)
+        self.assertGreater(r1, 0.0)
+        self.assertEqual(r0, 0.0)
+
+    def test_evade_reward_is_off_by_default(self):
+        env = self._env()
+        env.p0.state, env.p0.phase, env.p0.move = S_ATTACK, "active", PUNCH
+        env.p0.timer, env.p0.landed, env.p0.evade_paid = 3, False, False
+        env.p1.state, env.p1.phase, env.p1.timer = S_SIDESTEP, "out", 5
+        env.p1.z, env.p1.vz = 0.4, 0.0
+        _o0, _o1, r0, r1, _done, info = env.step(IDLE, IDLE)
+        self.assertEqual(env.evades, 0)
+        self.assertEqual(r1, 0.0)
 
     def test_depth_is_visible_in_the_observation(self):
         env = self._env()

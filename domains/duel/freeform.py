@@ -89,6 +89,7 @@ SIDESTEP_FRAMES = 9      # out 9 frames, back 9: 0.45 m, 18-frame commitment
 DEPTH_HALF = 1.2         # arena half-depth in metres
 Z_DECEL = physics.KINETIC_MU * physics.GRAVITY
 OBS_DIM_3D = 39          # 35 + z / vz for both fighters
+EVADE_REWARD = 0.8       # opt-in payoff for a sidestep that made active air whiff
 
 CHAKRA_MAX = 100.0
 CHAKRA_REGEN = 0.6        # per frame -> full bar in ~2.8 s
@@ -154,6 +155,9 @@ class FreeformDuel(ArticulatedDuel):
         self.arena3d = bool(arena3d)
         ec = dict(kwargs.get("env_cfg") or {})
         self.depth_half = float(ec.get("depth", DEPTH_HALF))
+        # Off by default: a 40-round A/B showed the shaping makes 3D worse
+        # (.375 vs .500), see FINDINGS 22.5.  Opt in with --evade-reward.
+        self.evade_reward = float(ec.get("evade_reward", 0.0))
         super().__init__(*args, **kwargs)
 
     def reset(self, seed=None):
@@ -168,9 +172,11 @@ class FreeformDuel(ArticulatedDuel):
         self.wall_bounces = 0
         self.wall_slams = 0
         self.sidesteps = 0
+        self.evades = 0
         self.hitstop = 0
         self.knockback_peak = 0.0
         self._slam_rewards = [0.0, 0.0]
+        self._evade_rewards = [0.0, 0.0]
         obs = super().reset(seed)
         for f in (self.p0, self.p1):
             f.chakra = CHAKRA_MAX
@@ -180,6 +186,7 @@ class FreeformDuel(ArticulatedDuel):
             f.z = 0.0
             f.vz = 0.0
             f.side_dir = 1.0
+            f.evade_paid = False
             if self.physics:
                 f.mass_speed = physics.mass_speed_factor(f.mass)
         return self._obs()
@@ -256,6 +263,7 @@ class FreeformDuel(ArticulatedDuel):
             me.phase = "windup"
             me.timer = windup
             me.landed = False
+            me.evade_paid = False
             if me.y <= 0.0:
                 me.vx = 0.0
             return
@@ -460,8 +468,18 @@ class FreeformDuel(ArticulatedDuel):
             return None
         # A punch travels along x at the attacker's z plane.  If the defender
         # has stepped out of that plane the limb passes through empty space,
-        # even though the 2D silhouette overlaps.
+        # even though the 2D silhouette overlaps.  With env_cfg["evade_reward"]
+        # enabled, a side-hop that made an *active* swing whiff also pays the
+        # dodger -- avoiding damage alone was not enough to make depth a skill,
+        # but the payoff turned out to hurt (FINDINGS 22.5), so it is opt-in.
         if self._off_line(me, opp):
+            if (self.evade_reward > 0.0
+                    and opp.state == S_SIDESTEP and me.state == S_ATTACK
+                    and me.phase == "active" and not me.evade_paid):
+                me.evade_paid = True
+                idx = 0 if me is self.p0 else 1
+                self._evade_rewards[1 - idx] += self.evade_reward
+                self.evades += 1
             return None
         if getattr(opp, "invuln", 0) > 0:
             # The substitution window: the limb passes through empty air.
@@ -538,7 +556,7 @@ class FreeformDuel(ArticulatedDuel):
             "subs": self.subs, "sub_avoided": self.sub_avoided,
             "guard_breaks": self.guard_breaks, "counters": self.counters,
             "wall_bounces": self.wall_bounces, "wall_slams": self.wall_slams,
-            "sidesteps": self.sidesteps,
+            "sidesteps": self.sidesteps, "evades": self.evades,
             "knockback_peak": round(self.knockback_peak, 3),
             "guard": (self.p0.guard, self.p1.guard),
             "hp": (self.p0.hp, self.p1.hp),
@@ -552,6 +570,7 @@ class FreeformDuel(ArticulatedDuel):
             self.frames += 1
             return [0.0, 0.0], False, self._match_info()
         self._slam_rewards = [0.0, 0.0]
+        self._evade_rewards = [0.0, 0.0]
         for f in (self.p0, self.p1):
             if f.alive:
                 f.chakra = min(CHAKRA_MAX, f.chakra + CHAKRA_REGEN)
@@ -565,7 +584,7 @@ class FreeformDuel(ArticulatedDuel):
         rewards, done, info = super()._advance(a0, a1)
         # Wall-slam damage happens inside _integrate, after _combat has already
         # distributed this frame's hit rewards; fold it in afterwards.
-        rewards[0] += self._slam_rewards[0]
-        rewards[1] += self._slam_rewards[1]
+        rewards[0] += self._slam_rewards[0] + self._evade_rewards[0]
+        rewards[1] += self._slam_rewards[1] + self._evade_rewards[1]
         info.update(self._match_info())
         return rewards, done, info

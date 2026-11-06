@@ -152,12 +152,19 @@ class NeuroTrainer:
 
         # Weight classes are part of the match-up, not the policy: both seats
         # still share one network, but one body is heavier.  Mass only has an
-        # effect with --physics, so it is ignored otherwise.
+        # effect with --physics, so it is ignored otherwise.  The sidestep
+        # evade payoff is opt-in because it measured worse than no shaping.
         self.env_cfg = None
-        if args.env == "freeform" and args.physics:
-            m0, m1 = float(args.mass0), float(args.mass1)
-            if m0 != 70.0 or m1 != 70.0:
-                self.env_cfg = {"mass0": m0, "mass1": m1}
+        if args.env == "freeform":
+            cfg = {}
+            if args.physics:
+                m0, m1 = float(args.mass0), float(args.mass1)
+                if m0 != 70.0 or m1 != 70.0:
+                    cfg["mass0"], cfg["mass1"] = m0, m1
+            if args.evade_reward > 0.0:
+                cfg["evade_reward"] = float(args.evade_reward)
+            if cfg:
+                self.env_cfg = cfg
 
         self.policy_dim = (args.latent_dim if args.latent_policy
                            else self.obs_dim)
@@ -702,6 +709,7 @@ class NeuroTrainer:
             "wall_bounces": int(info.get("wall_bounces", 0)),
             "wall_slams": int(info.get("wall_slams", 0)),
             "sidesteps": int(info.get("sidesteps", 0)),
+            "evades": int(info.get("evades", 0)),
             "clashes": int(info.get("clashes", 0)),
             "head_hits": int(info.get("head_hits", 0)),
             "jumps": int(info.get("jumps", 0)),
@@ -730,6 +738,7 @@ class NeuroTrainer:
         walls = []
         slams = []
         steps_z = []
+        evades = []
         for k in range(n):
             name, opp = self._sample_opponent(iteration, k)
             seed = int(self.rng.integers(2 ** 31))
@@ -754,6 +763,7 @@ class NeuroTrainer:
             walls.append(stat["wall_bounces"])
             slams.append(stat["wall_slams"])
             steps_z.append(stat["sidesteps"])
+            evades.append(stat["evades"])
             if stat["affect"] is not None:
                 affects.append(stat["affect"])
 
@@ -789,6 +799,7 @@ class NeuroTrainer:
             "wall_bounces": float(np.mean(walls)) if walls else 0.0,
             "wall_slams": float(np.mean(slams)) if slams else 0.0,
             "sidesteps": float(np.mean(steps_z)) if steps_z else 0.0,
+            "evades": float(np.mean(evades)) if evades else 0.0,
             "affect": (np.mean(affects, axis=0) if affects else None),
             "steps": int(sum(len(ep.steps) for ep in episodes)),
             "returns": returns,
@@ -808,6 +819,7 @@ class NeuroTrainer:
         walls = []
         slams = []
         steps_z = []
+        evades = []
         eval_rng = np.random.default_rng(0)
         for seed in range(2000, 2000 + n):
             for side in (0, 1):
@@ -855,6 +867,7 @@ class NeuroTrainer:
                 walls.append(int(info.get("wall_bounces", 0)))
                 slams.append(int(info.get("wall_slams", 0)))
                 steps_z.append(int(info.get("sidesteps", 0)))
+                evades.append(int(info.get("evades", 0)))
         summary = summarise(outcomes, seed=0)
         margin_summary = summarise(margins, seed=0)
         return {
@@ -871,6 +884,7 @@ class NeuroTrainer:
             "wall_bounces": float(np.mean(walls)) if walls else 0.0,
             "wall_slams": float(np.mean(slams)) if slams else 0.0,
             "sidesteps": float(np.mean(steps_z)) if steps_z else 0.0,
+            "evades": float(np.mean(evades)) if evades else 0.0,
             "games": len(outcomes),
             "outcomes": outcomes,
         }
@@ -1172,6 +1186,8 @@ class NeuroTrainer:
             "eval_wall_slams": round(float(holdout.get("wall_slams", 0.0)), 2),
             "sidesteps": round(float(stats.get("sidesteps", 0.0)), 2),
             "eval_sidesteps": round(float(holdout.get("sidesteps", 0.0)), 2),
+            "evades": round(float(stats.get("evades", 0.0)), 2),
+            "eval_evades": round(float(holdout.get("evades", 0.0)), 2),
             "affect": (None if stats.get("affect") is None else {
                 name: round(float(value), 3) for name, value
                 in zip(AFFECT_KEYS, stats["affect"])}),
@@ -1324,6 +1340,11 @@ def build_argparser():
                     help="freeform + --physics: weight class of seat 0 in kg")
     ap.add_argument("--mass1", type=float, default=70.0,
                     help="freeform + --physics: weight class of seat 1 in kg")
+    ap.add_argument("--evade-reward", dest="evade_reward", type=float,
+                    default=0.0,
+                    help="freeform + --arena3d: shaping paid to a fighter whose "
+                         "side-hop made an active swing whiff (default 0 = off; "
+                         "0.8 measured worse than off, see FINDINGS 22.5)")
     ap.add_argument("--fitness", choices=("win", "margin"), default="win",
                     help="selection signal for PBT: binary win rate, or the "
                          "continuous health margin (hp difference / 100)")

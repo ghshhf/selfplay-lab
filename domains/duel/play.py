@@ -458,13 +458,20 @@ def main(argv=None):
                     help="seat 0 weight class in kg (physics only)")
     ap.add_argument("--mass1", type=float, default=70.0,
                     help="seat 1 weight class in kg (physics only)")
+    ap.add_argument("--evade-reward", dest="evade_reward", type=float,
+                    default=0.0,
+                    help="3D only: payoff for a side-hop that made an active "
+                         "swing whiff (off by default)")
     ap.add_argument("--json", type=str, default="")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
-    env_cfg = ({"mass0": args.mass0, "mass1": args.mass1}
-               if args.physics and (args.mass0 != 70.0 or args.mass1 != 70.0)
-               else None)
+    env_cfg = {}
+    if args.physics and (args.mass0 != 70.0 or args.mass1 != 70.0):
+        env_cfg["mass0"], env_cfg["mass1"] = args.mass0, args.mass1
+    if args.evade_reward > 0.0:
+        env_cfg["evade_reward"] = float(args.evade_reward)
+    env_cfg = env_cfg or None
     arena = F.FreeformDuel(max_frames=args.max_frames, emotion=args.emotion,
                            physics=args.physics, env_cfg=env_cfg,
                            arena3d=args.arena3d)
