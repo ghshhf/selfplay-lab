@@ -247,6 +247,12 @@ Tekken/Soulcalibur 的 sidestep 让同一招在距离不变时挥空。这没法
 路线：**几何（已完成）→ z 轴侧移动作与 z 观测（已完成）→ 3D 肢体胶囊姿态 → 摄像机/渲染**。
 实测见 FINDINGS 第二十二节。
 
+> 评估预算：8 局 holdout 的单 seed 区间约 ±.37，不足以判定 3D 的优劣。扩到
+> 24 局（`--eval-episodes 12`）后 2D .583 vs 3D .569，72 局配对差 −1.4 pp
+> （95% CI ±.15，McNemar p=1.00）：**3D 与 2D 不可区分，既非净成本也非增益**。
+> 同批对局切成三个 8 局窗口，差值符号会翻转（−16.7 / +16.7 / −4.2 pp）。
+> 结论见 FINDINGS 22.7。
+
 #### LLM 训练栈（`selfplay/nn/llmstack.py`）
 
 一条 `--llm-stack` 把所有"大模型默认做法"叠上来，每项也能单独关掉做消融：
@@ -439,6 +445,10 @@ python domains/neuro/train.py --env freeform --physics --arena3d \
 # 侧移成功奖励是实验开关（默认 0 关闭；开 0.8 实测更差，见 FINDINGS 22.5）
 python domains/neuro/train.py --env freeform --physics --arena3d \
     --evade-reward 0.8 --iterations 20 --episodes 4 --out-dir runs/neuro_3d_evade
+
+# 判定机制优劣时用 24 局 holdout：8 局窗口的差值符号会随机翻转（22.7）
+python domains/neuro/train.py --env freeform --physics --arena3d \
+    --iterations 40 --episodes 4 --eval-episodes 12 --out-dir runs/neuro_3d_24
 
 # 再打开情绪层（冷静/恐惧/愤怒/气势，43 维观测）
 python domains/neuro/train.py --env freeform --emotion --entropy-coef 0.05 \
